@@ -1,53 +1,90 @@
-I'll condense this to the essential technical instructions for a coding agent, focusing only on what needs to be built and how to test it.
+# ApexVector — Curvature-Preserving Plan
 
----
+## Core Innovation
 
-# Vectorizer v2 (ApexVector) — Technical Plan
+Replace standard Bézier fitting with **clothoid-based G² curve synthesis** that explicitly preserves curvature magnitude and variation.
 
-## Architecture Overview
+## Key Research Insights
 
-Replace two rigid pipelines with one adaptive pipeline that classifies image regions and applies optimal strategies per region.
+| Problem | Research Solution |
+|---------|-----------------|
+| Bézier curves destroy curvature | Use **clothoid segments** (Euler spirals) with linear curvature variation |
+| Jagged polygonal output | **κ-curves** or **εκ-curves** — curvature extrema at control points |
+| Geometric-only optimization | **Fairing** with curvature energy minimization |
+
+## Revised Pipeline
 
 ```
-Input → Ingest → SLIC Segmentation → Classify → Route to Strategy → Merge → Optimize SVG
+Input → EXIF fix → Edge detection (Canny) → 
+Tangent/curvature estimation → Clothoid fitting → 
+G² Bézier conversion → Differentiable refinement → SVG
 ```
 
-## Module Build Order
+## Critical Implementation
 
-| # | Module | Key Function | Test Against |
-|---|--------|--------------|--------------|
-| 1 | `types.py` | `Region`, `VectorRegion`, `AdaptiveConfig` dataclasses | Instantiate all, validate shapes |
-| 2 | `compute_backend.py` | `slic_superpixels`, `delta_e_2000`, `fit_bezier`, `delaunay` | Load image from `./testing/`, verify outputs |
-| 3 | `raster_ingest.py` | `ingest(path) → IngestResult` | All images in `./testing/`, verify linear/sRGB arrays |
-| 4 | `perceptual_loss.py` | `perceptual_loss()`, `rasterize_svg()` | Image vs self = loss 0; vs blur = loss > 0 |
-| 5 | `region_decomposer.py` | `decompose() → list[Region]` | Masks cover image, disjoint, neighbors symmetric |
-| 6 | `region_classifier.py` | `classify() → regions with kind` | At least one of each kind exists across test images |
-| 7 | `strategies/flat.py` | `vectorize_flat() → VectorRegion` | SOLID fill, closed path |
-| 8 | `strategies/gradient.py` | `vectorize_gradient()` | LINEAR/RADIAL/MESH gradient, stops sorted |
-| 9 | `strategies/edge.py` | `vectorize_edge()` | More segments than flat, precise boundary |
-| 10 | `strategies/detail.py` | `vectorize_detail()` | Mesh within triangle limit |
-| 11 | `strategies/router.py` | `vectorize_all_regions()` | Parallel = sequential output |
-| 12 | `topology_merger.py` | `merge_topology()` | Fewer regions out, no duplicate adjacent colors |
-| 13 | `svg_optimizer.py` | `regions_to_svg() → str` | Valid XML, smaller than input |
-| 14 | `pipeline.py` | `UnifiedPipeline.process()` | SSIM > 0.75, ΔE < 15, runs < 10s for 512² |
-| 15 | `cli.py` | `python -m vectorizer input.png -o out.svg` | Exit 0, valid output, `--speed` faster than `--quality` |
+**Tangent/Curvature Estimation** (`curvature_estimator.py`):
+- Compute image gradient ∇I
+- Tangent direction: perpendicular to gradient
+- Curvature κ: divergence of normalized gradient field
 
-## Key Implementation Details
+**Clothoid Fitting** (`clothoid_fitter.py`):
+- Fit piecewise clothoids to edge points using **Fresnel integrals**
+- Match position, tangent, and curvature at joints
+- Clothoid: curve where curvature varies linearly with arc length
 
-- **Color space**: Work in linear RGB, convert to sRGB only for output
-- **Bézier fitting**: Implement Schneider's algorithm, split at 60° corners
-- **SLIC**: Use `skimage.segmentation.slic`, merge hierarchically by ΔE < threshold
-- **Region kinds**: FLAT (uniform), GRADIENT (consistent direction), EDGE (high edge density), DETAIL (complex)
-- **Parallel**: `ProcessPoolExecutor` with worker-local `ComputeBackend`
-- **Fallback**: Any strategy failure → `flat` strategy
+**G² Bézier Conversion** (`g2_converter.py`):
+- Convert clothoids to cubic Bézier with **G² continuity constraints**
+- Control points derived from osculating circles at endpoints
+- Formula: `Q₁ = P₀ + (L/3)T₀`, `Q₂ = P₁ - (L/3)T₁` with `L` from curvature match
 
-## Dependencies
+**Curvature-Aware Refinement** (`curvature_optimizer.py`):
+- Differentiable rasterization (DiffVG)
+- Loss = MSE + λ₁·curvature_error + λ₂·G²_violation
+- Curvature error: `∫(κ_rendered - κ_target)²ds`
 
-```toml
-numpy, opencv-python, scikit-image, scipy, Pillow, shapely
-optional: cupy-cuda12x, cairosvg, triangle
+## Build Order (10 modules)
+
+| # | Module | Key Output |
+|---|--------|-----------|
+| 1 | `types.py` | `ClothoidSegment`, `G2BezierPath`, `CurvatureField` |
+| 2 | `raster_ingest.py` | EXIF-corrected, linear RGB |
+| 3 | `curvature_estimator.py` | Tangent field T(x,y), curvature field κ(x,y) |
+| 4 | `edge_tracer.py` | Edge chains with (position, tangent, curvature) samples |
+| 5 | `clothoid_fitter.py` | `list[ClothoidSegment]` matching edge chains |
+| 6 | `g2_converter.py` | `list[G2BezierPath]` with C² continuity |
+| 7 | `curvature_optimizer.py` | DiffVG-refined paths minimizing curvature error |
+| 8 | `topology_merger.py` | Shared boundary deduplication |
+| 9 | `svg_export.py` | Valid SVG with curve commands only |
+| 10 | `pipeline.py` | End-to-end orchestration |
+
+## Key Formulas
+
+**Clothoid parametric form:**
 ```
+x(s) = ∫₀ˢ cos(½κ't² + κ₀t + θ₀)dt
+y(s) = ∫₀ˢ sin(½κ't² + κ₀t + θ₀)dt
+```
+where κ' = curvature derivative, κ₀ = start curvature, θ₀ = start angle.
+
+**G² Bézier from clothoid:**
+- Sample clothoid at endpoints P₀, P₁
+- Compute tangents T₀, T₁ and curvatures κ₀, κ₁
+- Bézier control points:
+  ```
+  Q₀ = P₀
+  Q₁ = P₀ + αT₀
+  Q₂ = P₁ - βT₁  
+  Q₃ = P₁
+  ```
+  where α, β solve G² continuity: `|Q₁-Q₀|³/|Q₂-Q₁|³ = κ₁/κ₀` (with sign)
 
 ## Validation
 
-Run `pytest tests/ -x` after each module. Final check: process all images in `./testing/`, verify SSIM > 0.75, mean ΔE < 15, SVG < original size, no NaN in output.
+Run on `./testing/` images. Verify:
+- **Visual**: No jagged edges, smooth curves preserved
+- **Numerical**: Curvature field SSIM > 0.90 vs target
+- **Geometric**: No G² discontinuities (curvature jumps < 5%)
+
+## Run test
+
+run the pipeline on every image in "test_images" folder, the output shpuld be in "test_images/out" folder with the same name. replace any previous output present in it.

@@ -82,7 +82,7 @@ def ingest(path: Union[str, Path]) -> IngestResult:
         with Image.open(path) as img:
             # Apply EXIF orientation transformation to handle rotation
             img = ImageOps.exif_transpose(img)
-            
+
             # Convert to RGB if necessary
             if img.mode == 'RGBA':
                 has_alpha = True
