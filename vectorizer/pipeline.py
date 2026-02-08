@@ -9,7 +9,7 @@ from vectorizer.region_decomposer import decompose
 from vectorizer.region_classifier import classify
 from vectorizer.strategies.router import vectorize_all_regions
 from vectorizer.topology_merger import merge_topology
-from vectorizer.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg
+from vectorizer.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg, generate_ultra_compressed_svg
 from vectorizer.perceptual_loss import compute_ssim, mean_delta_e
 
 
@@ -81,7 +81,13 @@ class UnifiedPipeline:
         
         # Step 6: Generate SVG
         print("Step 6/6: Generating SVG...")
-        if optimize:
+        if optimize == 'ultra':
+            svg_string = generate_ultra_compressed_svg(
+                vector_regions,
+                ingest_result.width,
+                ingest_result.height
+            )
+        elif optimize:
             svg_string = generate_optimized_svg(
                 vector_regions,
                 ingest_result.width,

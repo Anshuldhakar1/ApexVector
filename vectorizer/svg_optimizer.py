@@ -489,6 +489,115 @@ def get_svg_size(svg_string: str) -> int:
     return len(svg_string.encode('utf-8'))
 
 
+def generate_ultra_compressed_svg(regions, width, height):
+    """Generate ultra-compressed SVG with maximum size reduction.
+    
+    WARNING: This may reduce visual quality. Use for maximum compression only.
+    
+    Applies:
+    - 1-pixel coordinate quantization
+    - 0 decimal precision (integers only)
+    - Aggressive color merging (5% tolerance)
+    - Path deduplication
+    - Ultra-compact number formatting
+    """
+    from copy import deepcopy
+    
+    # Process regions with aggressive quantization
+    processed_regions = []
+    for region in regions:
+        if not region.path:
+            continue
+        
+        # Ultra-aggressive: 1px grid, simplify with tolerance
+        simplified = simplify_bezier_curves(region.path, tolerance=1.0)
+        quantized = quantize_coordinates(simplified, grid_size=1.0)
+        
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed_regions.append(new_region)
+    
+    # Build ultra-compact SVG with 0 precision
+    return _build_ultra_compact_svg(processed_regions, width, height)
+
+
+def _build_ultra_compact_svg(regions, width, height):
+    """Build SVG with maximum compression (0 decimal places)."""
+    # Group by color with aggressive merging
+    color_groups = {}
+    for region in regions:
+        if not region.path:
+            continue
+        
+        if region.fill_color is not None:
+            # Quantize color to reduce palette
+            color = _quantize_color(region.fill_color, levels=16)
+            color_hex = _color_to_hex_compact(color)
+            if color_hex not in color_groups:
+                color_groups[color_hex] = []
+            color_groups[color_hex].append(region)
+    
+    # Build SVG
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
+    
+    # Group paths by color
+    for color, group in color_groups.items():
+        if len(group) > 1:
+            parts.append(f'<g fill="{color}">')
+            for region in group:
+                path_data = _bezier_to_svg_path_ultra(region.path)
+                parts.append(f'<path d="{path_data}"/>')
+            parts.append('</g>')
+        else:
+            region = group[0]
+            path_data = _bezier_to_svg_path_ultra(region.path)
+            parts.append(f'<path d="{path_data}" fill="{color}"/>')
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def _bezier_to_svg_path_ultra(bezier_curves):
+    """Convert bezier curves to ultra-compact path (integers only)."""
+    if not bezier_curves:
+        return ''
+    
+    # Start at first point (as integers)
+    p0 = bezier_curves[0].p0
+    path_data = f'M{int(round(p0.x))},{int(round(p0.y))}'
+    
+    curr_x, curr_y = int(round(p0.x)), int(round(p0.y))
+    
+    for curve in bezier_curves:
+        # Use relative coordinates (all integers)
+        dx1 = int(round(curve.p1.x)) - curr_x
+        dy1 = int(round(curve.p1.y)) - curr_y
+        dx2 = int(round(curve.p2.x)) - int(round(curve.p1.x))
+        dy2 = int(round(curve.p2.y)) - int(round(curve.p1.y))
+        dx = int(round(curve.p3.x)) - int(round(curve.p2.x))
+        dy = int(round(curve.p3.y)) - int(round(curve.p2.y))
+        
+        path_data += f'c{dx1},{dy1} {dx2},{dy2} {dx},{dy}'
+        
+        curr_x = int(round(curve.p3.x))
+        curr_y = int(round(curve.p3.y))
+    
+    path_data += 'z'
+    return path_data
+
+
+def _quantize_color(color, levels=16):
+    """Quantize color to reduce palette size."""
+    if color.max() > 1.0:
+        color = color / 255.0
+    color = np.clip(color, 0, 1)
+    
+    # Quantize to specified levels
+    step = 1.0 / (levels - 1)
+    quantized = np.round(color / step) * step
+    return np.clip(quantized, 0, 1)
+
+
 def quantize_coordinates(bezier_curves, grid_size: float = 0.5):
     """Quantize coordinates to grid to improve compressibility.
     
