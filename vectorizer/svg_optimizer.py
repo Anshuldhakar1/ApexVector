@@ -763,6 +763,49 @@ def generate_extreme_svg(regions, width, height):
     return ''.join(parts)
 
 
+def generate_insane_svg(regions, width, height):
+    """Generate INSANE compression SVG with maximum possible reduction.
+    
+    WARNING: MASSIVE quality loss expected. Only for extreme size constraints.
+    Uses 4-level color palette and 4px grid.
+    """
+    from copy import deepcopy
+    
+    # Maximum aggression processing
+    processed = []
+    for region in regions:
+        if not region.path:
+            continue
+        # Extreme simplification
+        simplified = simplify_bezier_curves(region.path, tolerance=4.0)
+        # 4px quantization - very coarse
+        quantized = quantize_coordinates(simplified, grid_size=4.0)
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed.append(new_region)
+    
+    # Merge with only 4 color levels (insane)
+    merged = merge_all_same_color_paths(processed, color_levels=4)
+    
+    # Build minimal SVG
+    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
+    
+    for region in merged:
+        if not region.path:
+            continue
+        
+        if region.fill_color is not None:
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, 4))
+        else:
+            color = '#888'
+        
+        path_data = _bezier_to_svg_path_minimal(region.path)
+        parts.append(f"<path d='{path_data}' fill='{color}'/>")
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
 def merge_all_same_color_paths(regions, color_levels=8):
     """Merge ALL paths with same color globally (not just adjacent).
     
