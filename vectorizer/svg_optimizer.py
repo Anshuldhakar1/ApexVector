@@ -34,7 +34,7 @@ def regions_to_svg(
 
 
 def _regions_to_svg_compact(regions, width, height, precision):
-    """Generate compact (minified) SVG output."""
+    """Generate compact (minified) SVG output with aggressive optimizations."""
     # Group regions by fill color to minimize attribute repetition
     color_groups = {}
     gradients = []
@@ -62,14 +62,19 @@ def _regions_to_svg_compact(regions, width, height, precision):
                 color_groups[color] = []
             color_groups[color].append(region)
     
-    # Build compact SVG string manually for maximum compression
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">']
+    # Merge similar colors (within tolerance) to reduce groups
+    color_groups = _merge_similar_colors(color_groups, tolerance=0.02)
     
-    # Add gradient definitions if needed
+    # Build compact SVG string manually for maximum compression
+    # Remove width/height if same as viewBox (redundant)
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
+    
+    # Add gradient definitions if needed with shortest IDs
     if gradients:
         parts.append('<defs>')
         for i, region in enumerate(gradients):
-            grad_id = f'g{i}'
+            # Use shortest possible IDs: a, b, c, ... z, aa, ab, etc.
+            grad_id = _short_id(i)
             parts.append(_create_gradient_def_compact(region, grad_id))
         parts.append('</defs>')
     
@@ -90,13 +95,74 @@ def _regions_to_svg_compact(regions, width, height, precision):
     
     # Output gradient-filled paths
     for i, region in enumerate(gradients):
-        grad_id = f'g{i}'
+        grad_id = _short_id(i)
         path_data = _bezier_to_svg_path(region.path, precision, use_relative=True)
         parts.append(f'<path d="{path_data}" fill="url(#{grad_id})"/>')
     
     parts.append('</svg>')
     
     return ''.join(parts)
+
+
+def _short_id(n):
+    """Generate short ID string: 0->a, 1->b, ..., 25->z, 26->aa, etc."""
+    if n < 26:
+        return chr(ord('a') + n)
+    else:
+        return _short_id(n // 26 - 1) + chr(ord('a') + (n % 26))
+
+
+def _merge_similar_colors(color_groups, tolerance=0.02):
+    """Merge color groups with similar colors to reduce repetition."""
+    if len(color_groups) <= 1:
+        return color_groups
+    
+    colors = list(color_groups.keys())
+    merged = {}
+    used = set()
+    
+    for i, color1 in enumerate(colors):
+        if color1 in used:
+            continue
+        
+        # Parse color
+        r1, g1, b1 = _hex_to_rgb(color1)
+        merged_regions = list(color_groups[color1])
+        
+        # Find similar colors
+        for j in range(i + 1, len(colors)):
+            color2 = colors[j]
+            if color2 in used:
+                continue
+            
+            r2, g2, b2 = _hex_to_rgb(color2)
+            
+            # Check if colors are similar
+            if (abs(r1 - r2) < tolerance and 
+                abs(g1 - g2) < tolerance and 
+                abs(b1 - b2) < tolerance):
+                merged_regions.extend(color_groups[color2])
+                used.add(color2)
+        
+        # Use first color as representative
+        merged[color1] = merged_regions
+        used.add(color1)
+    
+    return merged
+
+
+def _hex_to_rgb(hex_color):
+    """Convert hex color to RGB tuple."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 3:
+        r = int(hex_color[0] + hex_color[0], 16) / 255.0
+        g = int(hex_color[1] + hex_color[1], 16) / 255.0
+        b = int(hex_color[2] + hex_color[2], 16) / 255.0
+    else:
+        r = int(hex_color[0:2], 16) / 255.0
+        g = int(hex_color[2:4], 16) / 255.0
+        b = int(hex_color[4:6], 16) / 255.0
+    return (r, g, b)
 
 
 def _regions_to_svg_pretty(regions, width, height, precision):

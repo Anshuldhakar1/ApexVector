@@ -9,7 +9,7 @@ from vectorizer.region_decomposer import decompose
 from vectorizer.region_classifier import classify
 from vectorizer.strategies.router import vectorize_all_regions
 from vectorizer.topology_merger import merge_topology
-from vectorizer.svg_optimizer import regions_to_svg, get_svg_size
+from vectorizer.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg
 from vectorizer.perceptual_loss import compute_ssim, mean_delta_e
 
 
@@ -25,13 +25,14 @@ class UnifiedPipeline:
         """
         self.config = config or AdaptiveConfig()
     
-    def process(self, input_path: Union[str, Path], output_path: Optional[Union[str, Path]] = None) -> str:
+    def process(self, input_path: Union[str, Path], output_path: Optional[Union[str, Path]] = None, optimize: bool = True) -> str:
         """
         Process an image through the vectorization pipeline.
         
         Args:
             input_path: Path to input image
             output_path: Optional path for output SVG
+            optimize: Whether to apply SVG compression optimizations
             
         Returns:
             SVG string
@@ -80,12 +81,23 @@ class UnifiedPipeline:
         
         # Step 6: Generate SVG
         print("Step 6/6: Generating SVG...")
-        svg_string = regions_to_svg(
-            vector_regions,
-            ingest_result.width,
-            ingest_result.height,
-            self.config.precision
-        )
+        if optimize:
+            svg_string = generate_optimized_svg(
+                vector_regions,
+                ingest_result.width,
+                ingest_result.height,
+                quantization_grid=0.5,
+                simplify_tolerance=0.5,
+                base_precision=self.config.precision
+            )
+        else:
+            svg_string = regions_to_svg(
+                vector_regions,
+                ingest_result.width,
+                ingest_result.height,
+                self.config.precision,
+                compact=False
+            )
         
         # Save if output path provided
         if output_path:
