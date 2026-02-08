@@ -3,6 +3,8 @@
 ## Project Overview
 Python image vectorization: raster → optimized SVG via adaptive region classification.
 
+This is a windows environment.
+
 ## Commands
 
 ```bash
