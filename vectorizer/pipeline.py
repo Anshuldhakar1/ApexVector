@@ -9,7 +9,7 @@ from vectorizer.region_decomposer import decompose
 from vectorizer.region_classifier import classify
 from vectorizer.strategies.router import vectorize_all_regions
 from vectorizer.topology_merger import merge_topology
-from vectorizer.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg, generate_ultra_compressed_svg, generate_symbol_optimized_svg, generate_merged_svg, generate_extreme_svg, generate_insane_svg
+from vectorizer.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg, generate_ultra_compressed_svg, generate_symbol_optimized_svg, generate_merged_svg, generate_extreme_svg, generate_insane_svg, generate_monochrome_svg
 from vectorizer.perceptual_loss import compute_ssim, mean_delta_e
 
 
@@ -107,6 +107,12 @@ class UnifiedPipeline:
             )
         elif optimize == 'insane':
             svg_string = generate_insane_svg(
+                vector_regions,
+                ingest_result.width,
+                ingest_result.height
+            )
+        elif optimize == 'monochrome':
+            svg_string = generate_monochrome_svg(
                 vector_regions,
                 ingest_result.width,
                 ingest_result.height

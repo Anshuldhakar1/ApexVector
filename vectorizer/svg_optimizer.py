@@ -806,6 +806,62 @@ def generate_insane_svg(regions, width, height):
     return ''.join(parts)
 
 
+def generate_monochrome_svg(regions, width, height):
+    """Generate MONOCHROME SVG - only black and white!
+    
+    WARNING: EXTREME quality loss. Only for maximum compression.
+    Converts all colors to black or white based on luminance.
+    """
+    from copy import deepcopy
+    
+    # Maximum aggression processing
+    processed = []
+    for region in regions:
+        if not region.path:
+            continue
+        # Maximum simplification
+        simplified = simplify_bezier_curves(region.path, tolerance=8.0)
+        # 8px quantization - extremely coarse
+        quantized = quantize_coordinates(simplified, grid_size=8.0)
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed.append(new_region)
+    
+    # Group by luminance (black vs white)
+    black_paths = []
+    white_paths = []
+    
+    for region in processed:
+        if not region.path:
+            continue
+        
+        # Calculate luminance
+        if region.fill_color is not None:
+            color = region.fill_color
+            if color.max() > 1.0:
+                color = color / 255.0
+            luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+            
+            if luminance < 0.5:
+                black_paths.extend(region.path)
+            else:
+                white_paths.extend(region.path)
+    
+    # Build minimal monochrome SVG
+    parts = [f"<svg viewBox='0 0 {width} {height}' style='background:#fff'>"]
+    
+    # Black paths only (white is background)
+    if black_paths:
+        from vectorizer.types import VectorRegion, RegionKind
+        import numpy as np
+        black_region = VectorRegion(kind=RegionKind.FLAT, path=black_paths, fill_color=np.array([0, 0, 0]))
+        path_data = _bezier_to_svg_path_minimal(black_paths)
+        parts.append(f"<path d='{path_data}' fill='#000'/>")
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
 def merge_all_same_color_paths(regions, color_levels=8):
     """Merge ALL paths with same color globally (not just adjacent).
     
