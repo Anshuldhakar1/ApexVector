@@ -721,9 +721,56 @@ def generate_merged_svg(regions, width, height):
     return ''.join(parts)
 
 
-def merge_all_same_color_paths(regions):
-    """Merge ALL paths with same color globally (not just adjacent)."""
-    # Group by exact color
+def generate_extreme_svg(regions, width, height):
+    """Generate extremely compressed SVG with maximum aggression.
+    
+    WARNING: Significant quality loss likely. Use only when size is critical.
+    """
+    from copy import deepcopy
+    
+    # Process with maximum aggression
+    processed = []
+    for region in regions:
+        if not region.path:
+            continue
+        # Very aggressive simplification
+        simplified = simplify_bezier_curves(region.path, tolerance=2.0)
+        # 2px quantization
+        quantized = quantize_coordinates(simplified, grid_size=2.0)
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed.append(new_region)
+    
+    # Merge with only 8 color levels (very aggressive)
+    merged = merge_all_same_color_paths(processed, color_levels=8)
+    
+    # Build minimal SVG
+    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
+    
+    for region in merged:
+        if not region.path:
+            continue
+        
+        if region.fill_color is not None:
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, 8))
+        else:
+            color = '#808080'
+        
+        path_data = _bezier_to_svg_path_minimal(region.path)
+        parts.append(f"<path d='{path_data}' fill='{color}'/>")
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def merge_all_same_color_paths(regions, color_levels=8):
+    """Merge ALL paths with same color globally (not just adjacent).
+    
+    Args:
+        regions: List of regions
+        color_levels: Number of color quantization levels (8 = aggressive, 16 = normal)
+    """
+    # Group by quantized color
     color_groups = {}
     
     for region in regions:
@@ -731,7 +778,7 @@ def merge_all_same_color_paths(regions):
             continue
         
         if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, color_levels))
         else:
             color = '#808080'
         
