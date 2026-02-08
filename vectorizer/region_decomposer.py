@@ -208,7 +208,7 @@ def extract_region_boundary(region: Region, image_shape: Tuple[int, int]) -> np.
         image_shape: Shape of original image (H, W)
         
     Returns:
-        Array of boundary points (N, 2)
+        Array of boundary points (N, 2) in (x, y) format
     """
     # Extract boundary using skimage
     boundaries = find_boundaries(region.mask, mode='thick')
@@ -221,5 +221,9 @@ def extract_region_boundary(region: Region, image_shape: Tuple[int, int]) -> np.
     
     # Return the longest contour
     longest_contour = max(contours, key=len)
+    
+    # skimage find_contours returns (row, col) which is (y, x)
+    # We need to swap to (x, y) for SVG coordinates
+    longest_contour = longest_contour[:, [1, 0]]
     
     return longest_contour
