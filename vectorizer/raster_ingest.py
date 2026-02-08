@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Union
 import numpy as np
 from PIL import Image
+from PIL import ImageOps
 
 from vectorizer.types import IngestResult, VectorizationError
 
@@ -79,6 +80,9 @@ def ingest(path: Union[str, Path]) -> IngestResult:
     try:
         # Load image with PIL
         with Image.open(path) as img:
+            # Apply EXIF orientation transformation to handle rotation
+            img = ImageOps.exif_transpose(img)
+            
             # Convert to RGB if necessary
             if img.mode == 'RGBA':
                 has_alpha = True

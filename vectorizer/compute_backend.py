@@ -199,6 +199,40 @@ def fit_bezier(
             curves.extend(segment_curves)
         start_idx = end_idx
     
+    # Enforce minimum 3 segments per contour to prevent jagged output
+    min_segments = 3
+    if len(curves) < min_segments and len(points) >= 4:
+        # Redistribute points and force split into minimum segments
+        curves = _force_minimum_segments(points, max_error, max_iterations, min_segments)
+    
+    return curves
+
+
+def _force_minimum_segments(
+    points: np.ndarray,
+    max_error: float,
+    max_iterations: int,
+    min_segments: int
+) -> List[BezierCurve]:
+    """Force split points into at least min_segments bezier curves."""
+    curves = []
+    
+    # Split points into min_segments roughly equal parts
+    segment_size = len(points) // min_segments
+    
+    for i in range(min_segments):
+        start_idx = i * segment_size
+        if i == min_segments - 1:
+            # Last segment gets remaining points
+            end_idx = len(points)
+        else:
+            end_idx = (i + 1) * segment_size + 1  # +1 for overlap
+        
+        segment = points[start_idx:end_idx]
+        if len(segment) >= 2:
+            segment_curves = _fit_bezier_segment_recursive(segment, max_error, max_iterations)
+            curves.extend(segment_curves)
+    
     return curves
 
 

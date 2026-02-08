@@ -108,7 +108,7 @@ class AdaptiveConfig:
     """Configuration for adaptive vectorization pipeline."""
     # Segmentation
     slic_segments: int = 400
-    slic_compactness: float = 10.0
+    slic_compactness: float = 20.0
     slic_sigma: float = 1.0
     
     # Region merging
@@ -130,7 +130,7 @@ class AdaptiveConfig:
     
     # Output
     precision: int = 2  # Decimal places for SVG coordinates
-    simplify_tolerance: float = 0.5
+    simplify_tolerance: float = 0.8
 
 
 @dataclass
