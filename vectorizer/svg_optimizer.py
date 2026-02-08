@@ -598,6 +598,288 @@ def _quantize_color(color, levels=16):
     return np.clip(quantized, 0, 1)
 
 
+def deduplicate_paths(regions):
+    """Deduplicate identical path data across regions.
+    
+    Returns dict mapping path signatures to lists of regions with that path.
+    """
+    path_groups = {}
+    
+    for region in regions:
+        if not region.path:
+            continue
+        
+        # Create path signature from curve data
+        sig_parts = []
+        for curve in region.path:
+            # Quantize to integers for comparison
+            sig_parts.extend([
+                int(round(curve.p0.x)), int(round(curve.p0.y)),
+                int(round(curve.p1.x)), int(round(curve.p1.y)),
+                int(round(curve.p2.x)), int(round(curve.p2.y)),
+                int(round(curve.p3.x)), int(round(curve.p3.y)),
+            ])
+        
+        sig = tuple(sig_parts)
+        
+        if sig not in path_groups:
+            path_groups[sig] = []
+        path_groups[sig].append(region)
+    
+    return path_groups
+
+
+def merge_adjacent_paths(regions):
+    """Merge adjacent paths with same fill color into single path.
+    
+    This reduces the number of path elements by combining them.
+    """
+    if not regions:
+        return regions
+    
+    # Sort regions by color
+    def get_color_key(r):
+        if r.fill_color is not None:
+            c = _quantize_color(r.fill_color, 16)
+            return _color_to_hex_compact(c)
+        return '#808080'
+    
+    sorted_regions = sorted(regions, key=get_color_key)
+    
+    merged = []
+    current_color = None
+    current_path = []
+    
+    for region in sorted_regions:
+        if not region.path:
+            continue
+        
+        color = get_color_key(region)
+        
+        if color == current_color:
+            # Same color, append path
+            current_path.extend(region.path)
+        else:
+            # Different color, save current and start new
+            if current_path:
+                from copy import deepcopy
+                new_region = deepcopy(sorted_regions[0])  # Template
+                new_region.path = current_path
+                new_region.fill_color = regions[0].fill_color if regions else None
+                merged.append(new_region)
+            
+            current_color = color
+            current_path = list(region.path)
+    
+    # Don't forget the last group
+    if current_path:
+        from copy import deepcopy
+        new_region = deepcopy(sorted_regions[0])
+        new_region.path = current_path
+        new_region.fill_color = regions[0].fill_color if regions else None
+        merged.append(new_region)
+    
+    return merged
+
+
+def generate_merged_svg(regions, width, height):
+    """Generate SVG with merged adjacent paths of same color."""
+    from copy import deepcopy
+    
+    # Process regions
+    processed = []
+    for region in regions:
+        if not region.path:
+            continue
+        simplified = simplify_bezier_curves(region.path, tolerance=1.0)
+        quantized = quantize_coordinates(simplified, grid_size=1.0)
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed.append(new_region)
+    
+    # Merge ALL same-color paths globally (not just adjacent)
+    merged = merge_all_same_color_paths(processed)
+    
+    # Build SVG with minimal syntax
+    # Remove xmlns (implied in HTML5), use single quotes, no spaces
+    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
+    
+    for region in merged:
+        if not region.path:
+            continue
+        
+        if region.fill_color is not None:
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
+        else:
+            color = '#808080'
+        
+        # Use ultra-compact path generation
+        path_data = _bezier_to_svg_path_minimal(region.path)
+        parts.append(f"<path d='{path_data}' fill='{color}'/>")
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def merge_all_same_color_paths(regions):
+    """Merge ALL paths with same color globally (not just adjacent)."""
+    # Group by exact color
+    color_groups = {}
+    
+    for region in regions:
+        if not region.path:
+            continue
+        
+        if region.fill_color is not None:
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
+        else:
+            color = '#808080'
+        
+        if color not in color_groups:
+            color_groups[color] = []
+        color_groups[color].extend(region.path)
+    
+    # Create merged regions
+    merged = []
+    for color, path in color_groups.items():
+        from vectorizer.types import VectorRegion, RegionKind
+        import numpy as np
+        
+        region = VectorRegion(
+            kind=RegionKind.FLAT,
+            path=path,
+            fill_color=np.array([0.5, 0.5, 0.5])  # Placeholder
+        )
+        merged.append(region)
+    
+    return merged
+
+
+def _bezier_to_svg_path_minimal(bezier_curves):
+    """Convert to absolute minimal path data (no spaces, single quotes)."""
+    if not bezier_curves:
+        return ''
+    
+    # Use integers only, no spaces, compact format
+    p0 = bezier_curves[0].p0
+    path_data = f'M{int(round(p0.x))},{int(round(p0.y))}'
+    
+    curr_x, curr_y = int(round(p0.x)), int(round(p0.y))
+    
+    for curve in bezier_curves:
+        # Relative coordinates
+        p1x, p1y = int(round(curve.p1.x)), int(round(curve.p1.y))
+        p2x, p2y = int(round(curve.p2.x)), int(round(curve.p2.y))
+        p3x, p3y = int(round(curve.p3.x)), int(round(curve.p3.y))
+        
+        dx1, dy1 = p1x - curr_x, p1y - curr_y
+        dx2, dy2 = p2x - p1x, p2y - p1y
+        dx, dy = p3x - p2x, p3y - p2y
+        
+        # No spaces between numbers, comma is separator
+        path_data += f'c{dx1},{dy1},{dx2},{dy2},{dx},{dy}'
+        
+        curr_x, curr_y = p3x, p3y
+    
+    path_data += 'z'
+    return path_data
+
+
+def generate_symbol_optimized_svg(regions, width, height):
+    """Generate SVG with symbol reuse for duplicate paths.
+    
+    Uses SVG <symbol> and <use> elements to avoid repeating identical path data.
+    Best for images with many repeated shapes (patterns, icons, etc.).
+    """
+    from copy import deepcopy
+    
+    # Process regions with standard quantization
+    processed = []
+    for region in regions:
+        if not region.path:
+            continue
+        simplified = simplify_bezier_curves(region.path, tolerance=0.5)
+        quantized = quantize_coordinates(simplified, grid_size=1.0)
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed.append(new_region)
+    
+    # Find duplicate paths
+    path_groups = deduplicate_paths(processed)
+    
+    # Separate unique paths from duplicates
+    unique_paths = []
+    duplicate_groups = {}
+    symbol_id = 0
+    
+    for sig, group in path_groups.items():
+        if len(group) > 1:
+            # Multiple regions share this path
+            sid = _short_id(symbol_id)
+            symbol_id += 1
+            duplicate_groups[sid] = {
+                'path': group[0].path,
+                'regions': group
+            }
+        else:
+            unique_paths.append(group[0])
+    
+    # Build SVG with symbols
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
+    
+    # Define symbols
+    if duplicate_groups:
+        parts.append('<defs>')
+        for sid, data in duplicate_groups.items():
+            path_data = _bezier_to_svg_path_ultra(data['path'])
+            parts.append(f'<symbol id="{sid}" viewBox="0 0 {width} {height}"><path d="{path_data}"/></symbol>')
+        parts.append('</defs>')
+    
+    # Group by fill color
+    color_groups = {}
+    for region in unique_paths:
+        if region.fill_color is not None:
+            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
+            if color not in color_groups:
+                color_groups[color] = []
+            color_groups[color].append(region)
+    
+    # Output unique paths
+    for color, group in color_groups.items():
+        if len(group) > 1:
+            parts.append(f'<g fill="{color}">')
+            for region in group:
+                path_data = _bezier_to_svg_path_ultra(region.path)
+                parts.append(f'<path d="{path_data}"/>')
+            parts.append('</g>')
+        else:
+            path_data = _bezier_to_svg_path_ultra(group[0].path)
+            parts.append(f'<path d="{path_data}" fill="{color}"/>')
+    
+    # Output uses of duplicate paths
+    for sid, data in duplicate_groups.items():
+        # Group by color
+        color_groups = {}
+        for region in data['regions']:
+            if region.fill_color is not None:
+                color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
+                if color not in color_groups:
+                    color_groups[color] = []
+                color_groups[color].append(region)
+        
+        for color, group in color_groups.items():
+            if len(group) > 1:
+                parts.append(f'<g fill="{color}">')
+                for _ in group:
+                    parts.append(f'<use href="#{sid}"/>')
+                parts.append('</g>')
+            else:
+                parts.append(f'<use href="#{sid}" fill="{color}"/>')
+    
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
 def quantize_coordinates(bezier_curves, grid_size: float = 0.5):
     """Quantize coordinates to grid to improve compressibility.
     
