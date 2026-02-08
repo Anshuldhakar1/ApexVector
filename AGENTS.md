@@ -69,6 +69,18 @@ def process(path: Path):
 - Pre-allocate known-size arrays
 - Profile before optimizing
 
+## Branch: feature/curvature-preserving
+
+**Active Development**: Clothoid-based G² curve synthesis for curvature-preserving vectorization.
+
+**Goal**: Replace standard Bézier fitting with clothoid-based curves that preserve curvature magnitude and variation.
+
+**Key Modules** (see tasks.md for full spec):
+- `curvature_estimator.py` - Tangent/curvature field computation
+- `clothoid_fitter.py` - Piecewise clothoid fitting using Fresnel integrals
+- `g2_converter.py` - Clothoid to G² Bézier conversion
+- `curvature_optimizer.py` - Differentiable refinement
+
 ## Architecture
 
 - **Color space**: Linear RGB internally, sRGB for output
