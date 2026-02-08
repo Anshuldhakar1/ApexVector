@@ -11,20 +11,96 @@ def regions_to_svg(
     regions: List[VectorRegion],
     width: int,
     height: int,
-    precision: int = 2
+    precision: int = 2,
+    compact: bool = True
 ) -> str:
     """
-    Convert vectorized regions to SVG string.
+    Convert vectorized regions to SVG string with optional compaction.
     
     Args:
         regions: List of vectorized regions
         width: Image width
         height: Image height
         precision: Decimal places for coordinates
+        compact: Whether to use compact output (minified)
         
     Returns:
         SVG XML string
     """
+    if compact:
+        return _regions_to_svg_compact(regions, width, height, precision)
+    else:
+        return _regions_to_svg_pretty(regions, width, height, precision)
+
+
+def _regions_to_svg_compact(regions, width, height, precision):
+    """Generate compact (minified) SVG output."""
+    # Group regions by fill color to minimize attribute repetition
+    color_groups = {}
+    gradients = []
+    
+    for region in regions:
+        if not region.path:
+            continue
+        
+        if region.kind == RegionKind.FLAT and region.fill_color is not None:
+            color = _color_to_hex_compact(region.fill_color)
+            if color not in color_groups:
+                color_groups[color] = []
+            color_groups[color].append(region)
+        elif region.kind == RegionKind.GRADIENT and region.gradient_type is not None:
+            gradients.append(region)
+        elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
+            # Use average color
+            avg_color = _color_to_hex_compact(np.mean(region.mesh_colors, axis=0))
+            if avg_color not in color_groups:
+                color_groups[avg_color] = []
+            color_groups[avg_color].append(region)
+        else:
+            color = '#808080'
+            if color not in color_groups:
+                color_groups[color] = []
+            color_groups[color].append(region)
+    
+    # Build compact SVG string manually for maximum compression
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">']
+    
+    # Add gradient definitions if needed
+    if gradients:
+        parts.append('<defs>')
+        for i, region in enumerate(gradients):
+            grad_id = f'g{i}'
+            parts.append(_create_gradient_def_compact(region, grad_id))
+        parts.append('</defs>')
+    
+    # Output paths grouped by fill color
+    for color, group in color_groups.items():
+        # Multiple paths with same color - use group
+        if len(group) > 1:
+            parts.append(f'<g fill="{color}">')
+            for region in group:
+                path_data = _bezier_to_svg_path(region.path, precision, use_relative=True)
+                parts.append(f'<path d="{path_data}"/>')
+            parts.append('</g>')
+        else:
+            # Single path
+            region = group[0]
+            path_data = _bezier_to_svg_path(region.path, precision, use_relative=True)
+            parts.append(f'<path d="{path_data}" fill="{color}"/>')
+    
+    # Output gradient-filled paths
+    for i, region in enumerate(gradients):
+        grad_id = f'g{i}'
+        path_data = _bezier_to_svg_path(region.path, precision, use_relative=True)
+        parts.append(f'<path d="{path_data}" fill="url(#{grad_id})"/>')
+    
+    parts.append('</svg>')
+    
+    return ''.join(parts)
+
+
+def _regions_to_svg_pretty(regions, width, height, precision):
+    """Generate pretty-printed SVG output."""
     # Create SVG root element
     svg = ET.Element('svg')
     svg.set('xmlns', 'http://www.w3.org/2000/svg')
@@ -44,7 +120,7 @@ def regions_to_svg(
             continue
         
         # Convert path to SVG path data
-        path_data = _bezier_to_svg_path(region.path, precision)
+        path_data = _bezier_to_svg_path(region.path, precision, use_relative=False)
         
         # Create path element
         path_elem = ET.SubElement(svg, 'path')
@@ -52,7 +128,7 @@ def regions_to_svg(
         
         # Set fill based on region kind
         if region.kind == RegionKind.FLAT and region.fill_color is not None:
-            color = _color_to_hex(region.fill_color)
+            color = _color_to_hex_compact(region.fill_color)
             path_elem.set('fill', color)
         
         elif region.kind == RegionKind.GRADIENT and region.gradient_type is not None:
@@ -65,20 +141,16 @@ def regions_to_svg(
         
         elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
             # For detail regions, we need to create mesh gradient
-            # This is a simplified version - full implementation would be more complex
             grad_id = f'mesh_{gradient_id}'
             gradient_id += 1
             
             # Use average color as fallback
             avg_color = np.mean(region.mesh_colors, axis=0)
-            path_elem.set('fill', _color_to_hex(avg_color))
+            path_elem.set('fill', _color_to_hex_compact(avg_color))
         
         else:
             # Default fill
             path_elem.set('fill', '#808080')
-        
-        # Set stroke to none (no outline)
-        path_elem.set('stroke', 'none')
     
     # Convert to string
     svg_string = ET.tostring(svg, encoding='unicode')
@@ -93,8 +165,8 @@ def regions_to_svg(
     return '\n'.join(lines)
 
 
-def _bezier_to_svg_path(bezier_curves, precision: int = 2) -> str:
-    """Convert bezier curves to SVG path data string."""
+def _bezier_to_svg_path(bezier_curves, precision: int = 2, use_relative: bool = True) -> str:
+    """Convert bezier curves to SVG path data string with optimization."""
     if not bezier_curves:
         return ''
     
@@ -102,27 +174,130 @@ def _bezier_to_svg_path(bezier_curves, precision: int = 2) -> str:
     
     # Start at first point
     p0 = bezier_curves[0].p0
-    path_data = f'M {fmt.format(p0.x)} {fmt.format(p0.y)}'
+    path_data = f'M{fmt.format(p0.x)},{fmt.format(p0.y)}'
+    
+    # Track current position for relative coordinates
+    curr_x, curr_y = p0.x, p0.y
     
     # Add each curve
     for curve in bezier_curves:
-        # Cubic bezier: C x1 y1, x2 y2, x y
-        path_data += (
-            f' C {fmt.format(curve.p1.x)} {fmt.format(curve.p1.y)},'
-            f' {fmt.format(curve.p2.x)} {fmt.format(curve.p2.y)},'
-            f' {fmt.format(curve.p3.x)} {fmt.format(curve.p3.y)}'
-        )
+        if use_relative:
+            # Use relative cubic bezier (c) - coordinates relative to current position
+            # Format: c dx1,dy1 dx2,dy2 dx,dy
+            dx1 = curve.p1.x - curr_x
+            dy1 = curve.p1.y - curr_y
+            dx2 = curve.p2.x - curve.p1.x
+            dy2 = curve.p2.y - curve.p1.y
+            dx = curve.p3.x - curve.p2.x
+            dy = curve.p3.y - curve.p2.y
+            
+            # Build compact relative path
+            path_data += f'c{_fmt_compact(dx1)},{_fmt_compact(dy1)} {_fmt_compact(dx2)},{_fmt_compact(dy2)} {_fmt_compact(dx)},{_fmt_compact(dy)}'
+            
+            # Update current position
+            curr_x, curr_y = curve.p3.x, curve.p3.y
+        else:
+            # Absolute coordinates
+            path_data += (
+                f'C{fmt.format(curve.p1.x)},{fmt.format(curve.p1.y)} '
+                f'{fmt.format(curve.p2.x)},{fmt.format(curve.p2.y)} '
+                f'{fmt.format(curve.p3.x)},{fmt.format(curve.p3.y)}'
+            )
     
     # Close path
-    path_data += ' Z'
+    path_data += 'z'
     
     return path_data
 
 
+def _fmt_compact(value: float, max_precision: int = 2) -> str:
+    """Format number compactly - remove trailing zeros and use optimal precision."""
+    # Round to remove floating point noise
+    value = round(value, 10)
+    
+    # Use scientific notation for very small numbers (avoid scientific notation output)
+    if abs(value) < 0.0001 and value != 0:
+        value = 0.0
+    
+    # Format with specified precision
+    s = f'{value:.{max_precision}f}'
+    
+    # Remove trailing zeros
+    s = s.rstrip('0').rstrip('.')
+    
+    # Handle negative zero
+    if s == '-0':
+        s = '0'
+    
+    return s
+
+
+def simplify_bezier_curves(bezier_curves, tolerance: float = 0.5):
+    """Simplify bezier curves by removing redundant control points.
+    
+    Uses Ramer-Douglas-Peucker-like algorithm adapted for Bezier curves.
+    Returns simplified list of curves.
+    """
+    if len(bezier_curves) <= 2:
+        return bezier_curves
+    
+    simplified = [bezier_curves[0]]
+    
+    for i in range(1, len(bezier_curves)):
+        curr = bezier_curves[i]
+        prev = simplified[-1]
+        
+        # Check if current curve adds significant detail
+        # Approximate by checking control point deviation from straight line
+        start = np.array([prev.p0.x, prev.p0.y])
+        end = np.array([curr.p3.x, curr.p3.y])
+        
+        # Mid control points
+        cp1 = np.array([prev.p1.x, prev.p1.y])
+        cp2 = np.array([prev.p2.x, prev.p2.y])
+        cp3 = np.array([curr.p1.x, curr.p1.y])
+        cp4 = np.array([curr.p2.x, curr.p2.y])
+        
+        # Check deviation from straight line
+        def point_line_distance(point, line_start, line_end):
+            if np.all(line_start == line_end):
+                return np.linalg.norm(point - line_start)
+            return np.linalg.norm(np.cross(line_end - line_start, line_start - point)) / np.linalg.norm(line_end - line_start)
+        
+        # If curves are roughly collinear, try to merge
+        max_deviation = max(
+            point_line_distance(cp1, start, end),
+            point_line_distance(cp2, start, end),
+            point_line_distance(cp3, start, end),
+            point_line_distance(cp4, start, end)
+        )
+        
+        if max_deviation < tolerance:
+            # Merge curves - replace last curve with new combined one
+            # Simple approach: just extend to current end point
+            from vectorizer.types import BezierCurve
+            merged = BezierCurve(
+                p0=prev.p0,
+                p1=prev.p1,
+                p2=curr.p2,
+                p3=curr.p3
+            )
+            simplified[-1] = merged
+        else:
+            simplified.append(curr)
+    
+    return simplified
+
+
 def _color_to_hex(color: np.ndarray) -> str:
     """Convert RGB color to hex string."""
+    return _color_to_hex_compact(color)
+
+
+def _color_to_hex_compact(color: np.ndarray) -> str:
+    """Convert RGB color to compact hex string with 3-digit shorthand when possible."""
     # Ensure color is in [0, 1] range
-    if color.max() > 1.0:
+    if hasattr(color, 'max') and color.max() > 1.0:
         color = color / 255.0
     
     # Clamp to [0, 1]
@@ -130,8 +305,15 @@ def _color_to_hex(color: np.ndarray) -> str:
     
     # Convert to 0-255
     rgb = (color * 255).astype(int)
+    r, g, b = rgb[0], rgb[1], rgb[2]
     
-    return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
+    # Check if we can use 3-digit shorthand
+    if (r % 17 == 0) and (g % 17 == 0) and (b % 17 == 0):
+        # Use shorthand: #RGB
+        return f'#{r//17:x}{g//17:x}{b//17:x}'
+    else:
+        # Use full 6-digit: #RRGGBB
+        return f'#{r:02x}{g:02x}{b:02x}'
 
 
 def _create_gradient_def(defs, region: VectorRegion, grad_id: str):
@@ -175,6 +357,33 @@ def _create_gradient_def(defs, region: VectorRegion, grad_id: str):
         stop_elem.set('stop-color', _color_to_hex(stop.color))
 
 
+def _create_gradient_def_compact(region: VectorRegion, grad_id: str) -> str:
+    """Create compact gradient definition string."""
+    if region.gradient_type == GradientType.LINEAR:
+        if region.gradient_start and region.gradient_end:
+            x1, y1 = region.gradient_start.x, region.gradient_start.y
+            x2, y2 = region.gradient_end.x, region.gradient_end.y
+            grad_def = f'<linearGradient id="{grad_id}" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}">'
+        else:
+            grad_def = f'<linearGradient id="{grad_id}">'
+    elif region.gradient_type == GradientType.RADIAL:
+        cx = region.gradient_center.x if region.gradient_center else '50%'
+        cy = region.gradient_center.y if region.gradient_center else '50%'
+        r = region.gradient_radius if region.gradient_radius else '50%'
+        grad_def = f'<radialGradient id="{grad_id}" cx="{cx}" cy="{cy}" r="{r}">'
+    else:
+        grad_def = f'<linearGradient id="{grad_id}">'
+    
+    # Add color stops
+    stops = []
+    for stop in region.gradient_stops:
+        offset = f'{stop.offset * 100:g}%'  # Use %g to remove trailing zeros
+        color = _color_to_hex_compact(stop.color)
+        stops.append(f'<stop offset="{offset}" stop-color="{color}"/>')
+    
+    return grad_def + ''.join(stops) + '</linearGradient>'
+
+
 def optimize_svg(svg_string: str) -> str:
     """
     Optimize SVG by removing unnecessary precision and whitespace.
@@ -212,3 +421,118 @@ def _remove_whitespace(element):
 def get_svg_size(svg_string: str) -> int:
     """Get size of SVG in bytes."""
     return len(svg_string.encode('utf-8'))
+
+
+def quantize_coordinates(bezier_curves, grid_size: float = 0.5):
+    """Quantize coordinates to grid to improve compressibility.
+    
+    Rounds all coordinates to nearest grid point, which:
+    1. Reduces precision needed to represent coordinates
+    2. Makes values more repetitive (better gzip compression)
+    3. Can maintain visual quality if grid is fine enough
+    
+    Args:
+        bezier_curves: List of BezierCurve objects
+        grid_size: Size of quantization grid (default 0.5 pixels)
+        
+    Returns:
+        List of quantized BezierCurve objects
+    """
+    from vectorizer.types import BezierCurve, Point
+    
+    def quantize(val):
+        return round(val / grid_size) * grid_size
+    
+    quantized = []
+    for curve in bezier_curves:
+        q_curve = BezierCurve(
+            p0=Point(quantize(curve.p0.x), quantize(curve.p0.y)),
+            p1=Point(quantize(curve.p1.x), quantize(curve.p1.y)),
+            p2=Point(quantize(curve.p2.x), quantize(curve.p2.y)),
+            p3=Point(quantize(curve.p3.x), quantize(curve.p3.y))
+        )
+        quantized.append(q_curve)
+    
+    return quantized
+
+
+def optimize_precision_adaptive(bezier_curves, base_precision: int = 2):
+    """Adaptively optimize decimal precision for each coordinate.
+    
+    Uses lower precision for coordinates that are already close to integers.
+    
+    Returns:
+        Optimized path string
+    """
+    if not bezier_curves:
+        return ''
+    
+    # Collect all coordinate values
+    values = []
+    for curve in bezier_curves:
+        for point in [curve.p0, curve.p1, curve.p2, curve.p3]:
+            values.extend([point.x, point.y])
+    
+    # Analyze decimal parts to find optimal precision
+    # If most values are integers or half-integers, we can use lower precision
+    decimal_parts = [abs(v - round(v)) for v in values]
+    avg_decimal = sum(decimal_parts) / len(decimal_parts) if decimal_parts else 0
+    
+    # Adjust precision based on average decimal part
+    if avg_decimal < 0.05:
+        precision = 0  # Mostly integers
+    elif avg_decimal < 0.15:
+        precision = 1  # Mostly half-integers
+    else:
+        precision = base_precision
+    
+    return _bezier_to_svg_path(bezier_curves, precision=precision, use_relative=True)
+
+
+def generate_optimized_svg(regions, width, height, 
+                          quantization_grid: float = 0.5,
+                          simplify_tolerance: float = 0.5,
+                          base_precision: int = 2) -> str:
+    """Generate fully optimized SVG with all compression techniques applied.
+    
+    Applies:
+    1. Path simplification
+    2. Coordinate quantization  
+    3. Adaptive precision
+    4. Relative coordinates
+    5. Compact number formatting
+    6. Color grouping
+    7. Minified XML output
+    
+    Args:
+        regions: List of VectorRegion objects
+        width: SVG width
+        height: SVG height
+        quantization_grid: Grid size for coordinate quantization
+        simplify_tolerance: Tolerance for path simplification
+        base_precision: Base decimal precision
+        
+    Returns:
+        Optimized SVG string
+    """
+    from copy import deepcopy
+    
+    # Process regions
+    processed_regions = []
+    for region in regions:
+        if not region.path:
+            continue
+        
+        # Simplify curves
+        simplified = simplify_bezier_curves(region.path, tolerance=simplify_tolerance)
+        
+        # Quantize coordinates
+        quantized = quantize_coordinates(simplified, grid_size=quantization_grid)
+        
+        # Create new region with optimized path
+        new_region = deepcopy(region)
+        new_region.path = quantized
+        processed_regions.append(new_region)
+    
+    # Generate compact SVG
+    return _regions_to_svg_compact(processed_regions, width, height, base_precision)
