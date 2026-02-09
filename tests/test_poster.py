@@ -3,14 +3,14 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-from vectorizer.types import ApexConfig, BezierPath, BezierCurve, Point, Region
-from vectorizer.color_quantizer import quantize_colors, rgb_to_lab, lab_to_rgb
-from vectorizer.region_extractor import extract_regions, delta_e_2000
-from vectorizer.boundary_smoother import (
+from apexvec.types import ApexConfig, BezierPath, BezierCurve, Point, Region
+from apexvec.color_quantizer import quantize_colors, rgb_to_lab, lab_to_rgb
+from apexvec.region_extractor import extract_regions, delta_e_2000
+from apexvec.boundary_smoother import (
     extract_contours, fit_periodic_spline, spline_to_bezier, smooth_region_boundaries
 )
-from vectorizer.svg_export import format_color, format_number, generate_svg
-from vectorizer.poster_pipeline import PosterPipeline
+from apexvec.svg_export import format_color, format_number, generate_svg
+from apexvec.poster_pipeline import PosterPipeline
 
 
 class TestColorQuantizer:
