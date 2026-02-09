@@ -153,6 +153,25 @@ class IngestResult:
     has_alpha: bool
 
 
+@dataclass
+class BezierPath:
+    """Path representing a vectorized region boundary."""
+    curves: List[BezierCurve] = field(default_factory=list)
+    is_closed: bool = True
+
+
+@dataclass
+class ApexConfig:
+    """Configuration for poster-style vectorization pipeline."""
+    n_colors: int = 12
+    min_region_area_ratio: float = 0.001
+    spline_smoothness: float = 0.5
+    max_regions: int = 20
+    
+    # Output
+    precision: int = 2
+
+
 class VectorizationError(Exception):
     """Base exception for vectorization errors."""
     pass

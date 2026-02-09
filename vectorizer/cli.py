@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 from vectorizer.pipeline import UnifiedPipeline
-from vectorizer.types import AdaptiveConfig
+from vectorizer.poster_pipeline import PosterPipeline
+from vectorizer.types import AdaptiveConfig, ApexConfig
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -66,6 +67,19 @@ def create_parser() -> argparse.ArgumentParser:
         help='Optimization preset: lossless (archival), standard (balanced), compact (smaller), thumbnail (aggressive)'
     )
 
+    parser.add_argument(
+        '--poster',
+        action='store_true',
+        help='Poster-style mode - flat colors with smooth boundaries'
+    )
+
+    parser.add_argument(
+        '--colors',
+        type=int,
+        default=12,
+        help='Number of colors for poster mode (default: 12)'
+    )
+
     return parser
 
 
@@ -89,6 +103,44 @@ def main(args=None):
     # Create configuration
     config = AdaptiveConfig()
 
+    # Handle save_stages if provided
+    if parsed_args.save_stages:
+        config.save_stages = Path(parsed_args.save_stages)
+        config.save_stages.mkdir(parents=True, exist_ok=True)
+        print(f"Debug stages will be saved to: {config.save_stages}")
+
+    if parsed_args.poster:
+        # Poster-style mode
+        print("Mode: Poster-style (flat colors, smooth boundaries)")
+        
+        config = ApexConfig(n_colors=parsed_args.colors)
+        
+        try:
+            pipeline = PosterPipeline(config)
+            svg_string = pipeline.process(input_path, output_path)
+            
+            # Validate if requested
+            if parsed_args.validate:
+                print("\nValidating output...")
+                results = pipeline.validate(input_path, svg_string)
+                
+                print(f"\nValidation Results:")
+                print(f"  Regions: {results['region_count']} {'✓' if results['region_count_pass'] else '✗'}")
+                print(f"  SVG size: {results['svg_size_bytes']:,} bytes")
+                print(f"  Size reduction: {results['size_reduction']:.1f}%")
+                print(f"  Overall: {'PASS' if results['overall_pass'] else 'FAIL'}")
+                
+                return 0 if results['overall_pass'] else 1
+            
+            return 0
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    
+    # Standard (unified) pipeline mode
+    config = AdaptiveConfig()
+    
     # Handle save_stages if provided
     if parsed_args.save_stages:
         config.save_stages = Path(parsed_args.save_stages)
