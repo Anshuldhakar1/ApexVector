@@ -11,7 +11,7 @@ from apexvec.strategies.router import vectorize_all_regions
 from apexvec.topology_merger import merge_topology
 from apexvec.svg_optimizer import regions_to_svg, get_svg_size, generate_optimized_svg
 from apexvec.perceptual_loss import compute_ssim, mean_delta_e
-from vectorizer import viz_utils
+from apexvec import viz_utils
 
 
 class UnifiedPipeline:
