@@ -2,6 +2,10 @@
 
 Python image vectorization: raster → optimized SVG via adaptive region classification. It converts raster images (JPG/PNG) into scalable vector graphics (SVG) with a focus on preserving geometric and perceptual quality using advanced curve fitting and aggressive compression.
 
+![Poster-style Vectorization Example](showcase_poster.svg)
+
+*Example: Poster-style vectorization with 12 colors and smooth spline boundaries*
+
 ## Installation
 
 ApexVector requires Python 3.9+ and the following dependencies:
@@ -41,6 +45,25 @@ Use flags to adjust performance or quality trade-offs.
 ```bash
 python -m vectorizer input.png -o output.svg --quality --optimize merged
 ```
+
+### Poster-Style Vectorization
+
+Creates artistic poster-style vectorization with flat colors and smooth boundaries:
+
+```bash
+# Default: 12 colors
+python -m vectorizer input.png -o output.svg --poster
+
+# Custom color count (8-16 recommended)
+python -m vectorizer input.png -o output.svg --poster --colors 8
+```
+
+The poster pipeline:
+1. Quantizes image to N colors using K-means in LAB space
+2. Extracts connected components as regions
+3. Merges small regions (< 0.1% area) to nearest color
+4. Fits periodic cubic splines to boundaries
+5. Exports as SVG with relative cubic Bézier commands
 
 ### Testing
 
