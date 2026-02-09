@@ -1,90 +1,105 @@
-# ApexVector — Curvature-Preserving Plan
+Looking at your optimizations, here are the **quality killers** and **fixes**:
 
-## Core Innovation
+---
 
-Replace standard Bézier fitting with **clothoid-based G² curve synthesis** that explicitly preserves curvature magnitude and variation.
+## Critical Issues
 
-## Key Research Insights
+| Optimization | Problem | Why It Hurts |
+|-------------|---------|--------------|
+| **Coordinate quantization (0.5px grid)** | **Destroys smooth curves** | Curves forced to nearest grid point create jagged, blocky paths |
+| **Bezier simplification (RDP-like)** | **Removes control points aggressively** | "Merges consecutive curves" = loses curvature continuity |
+| **Integer-only coordinates** | **Polygonization** | Smooth curves become straight line segments |
+| **4-8 color levels** | **Posterization** | Gradients become solid color bands |
 
-| Problem | Research Solution |
-|---------|-----------------|
-| Bézier curves destroy curvature | Use **clothoid segments** (Euler spirals) with linear curvature variation |
-| Jagged polygonal output | **κ-curves** or **εκ-curves** — curvature extrema at control points |
-| Geometric-only optimization | **Fairing** with curvature energy minimization |
+Your `generate_ultra_compressed_svg` and `generate_extreme_svg` modes are **destroying the G² continuity** we tried to preserve.
 
-## Revised Pipeline
+---
 
+## The Core Conflict
+
+Your pipeline:
+1. **Creates** smooth G² Bézier curves (good)
+2. **Then destroys them** with quantization + simplification (bad)
+
+The optimization stage **undoes** the curvature-preserving work.
+
+---
+
+## Recommended Fixes
+
+### 1. **Curve-Aware Quantization**
+
+Replace uniform grid with **curvature-sensitive** quantization:
+
+```python
+def quantize_curvature_aware(bezier_curves, base_grid=0.5):
+    """Quantize less where curvature is high."""
+    for curve in bezier_curves:
+        # Compute curvature at sample points
+        curvature = compute_curvature(curve)
+        max_curv = max(curvature)
+        
+        # Adaptive grid: finer where curved
+        if max_curv > 0.1:  # High curvature
+            grid = base_grid * 0.25  # 0.125px precision
+        elif max_curv > 0.01:  # Medium
+            grid = base_grid  # 0.5px
+        else:  # Nearly straight
+            grid = base_grid * 2.0  # 1.0px, can be coarser
+        
+        quantize_curve(curve, grid)
 ```
-Input → EXIF fix → Edge detection (Canny) → 
-Tangent/curvature estimation → Clothoid fitting → 
-G² Bézier conversion → Differentiable refinement → SVG
+
+### 2. **G²-Preserving Simplification**
+
+Replace RDP with **curvature-error simplification**:
+
+```python
+def simplify_g2_preserving(curves, tolerance=0.5):
+    """Only simplify if curvature profile is preserved."""
+    for i, curve in enumerate(curves):
+        # Don't merge if it changes curvature at join
+        if i > 0 and not g2_continuous(curves[i-1], curve):
+            continue  # Keep separate
+        
+        # Check curvature error, not just geometric error
+        if curvature_error(curve) < tolerance:
+            simplify_curve(curve)
 ```
 
-## Critical Implementation
+### 3. **Gradient-Aware Color Reduction**
 
-**Tangent/Curvature Estimation** (`curvature_estimator.py`):
-- Compute image gradient ∇I
-- Tangent direction: perpendicular to gradient
-- Curvature κ: divergence of normalized gradient field
+Don't quantize colors globally. **Detect gradient regions and preserve smooth stops**:
 
-**Clothoid Fitting** (`clothoid_fitter.py`):
-- Fit piecewise clothoids to edge points using **Fresnel integrals**
-- Match position, tangent, and curvature at joints
-- Clothoid: curve where curvature varies linearly with arc length
-
-**G² Bézier Conversion** (`g2_converter.py`):
-- Convert clothoids to cubic Bézier with **G² continuity constraints**
-- Control points derived from osculating circles at endpoints
-- Formula: `Q₁ = P₀ + (L/3)T₀`, `Q₂ = P₁ - (L/3)T₁` with `L` from curvature match
-
-**Curvature-Aware Refinement** (`curvature_optimizer.py`):
-- Differentiable rasterization (DiffVG)
-- Loss = MSE + λ₁·curvature_error + λ₂·G²_violation
-- Curvature error: `∫(κ_rendered - κ_target)²ds`
-
-## Build Order (10 modules)
-
-| # | Module | Key Output |
-|---|--------|-----------|
-| 1 | `types.py` | `ClothoidSegment`, `G2BezierPath`, `CurvatureField` |
-| 2 | `raster_ingest.py` | EXIF-corrected, linear RGB |
-| 3 | `curvature_estimator.py` | Tangent field T(x,y), curvature field κ(x,y) |
-| 4 | `edge_tracer.py` | Edge chains with (position, tangent, curvature) samples |
-| 5 | `clothoid_fitter.py` | `list[ClothoidSegment]` matching edge chains |
-| 6 | `g2_converter.py` | `list[G2BezierPath]` with C² continuity |
-| 7 | `curvature_optimizer.py` | DiffVG-refined paths minimizing curvature error |
-| 8 | `topology_merger.py` | Shared boundary deduplication |
-| 9 | `svg_export.py` | Valid SVG with curve commands only |
-| 10 | `pipeline.py` | End-to-end orchestration |
-
-## Key Formulas
-
-**Clothoid parametric form:**
+```python
+def optimize_colors_smart(regions):
+    for region in regions:
+        if region.kind == RegionKind.GRADIENT:
+            # Keep full precision for gradient stops
+            preserve_gradient_precision(region)
+        else:
+            # Can quantize flat regions more aggressively
+            quantize_color(region, levels=16)
 ```
-x(s) = ∫₀ˢ cos(½κ't² + κ₀t + θ₀)dt
-y(s) = ∫₀ˢ sin(½κ't² + κ₀t + θ₀)dt
-```
-where κ' = curvature derivative, κ₀ = start curvature, θ₀ = start angle.
 
-**G² Bézier from clothoid:**
-- Sample clothoid at endpoints P₀, P₁
-- Compute tangents T₀, T₁ and curvatures κ₀, κ₁
-- Bézier control points:
-  ```
-  Q₀ = P₀
-  Q₁ = P₀ + αT₀
-  Q₂ = P₁ - βT₁  
-  Q₃ = P₁
-  ```
-  where α, β solve G² continuity: `|Q₁-Q₀|³/|Q₂-Q₁|³ = κ₁/κ₀` (with sign)
+### 4. **Remove Dangerous Modes**
 
-## Validation
+| Mode | Action |
+|------|--------|
+| `generate_insane_svg` | **Delete** — 4px quantization destroys all curves |
+| `generate_monochrome_svg` | **Delete** or move to separate tool |
+| `generate_extreme_svg` | **Restrict** to thumbnails only |
+| `generate_merged_svg` | **Fix** — don't merge across gradient boundaries |
 
-Run on `./testing/` images. Verify:
-- **Visual**: No jagged edges, smooth curves preserved
-- **Numerical**: Curvature field SSIM > 0.90 vs target
-- **Geometric**: No G² discontinuities (curvature jumps < 5%)
+---
 
-## Run test
+## Revised Optimization Presets
 
-run the pipeline on every image in "test_images" folder, the output shpuld be in "test_images/out" folder with the same name. replace any previous output present in it.
+| Preset | Quantization | Simplification | Colors | Use Case |
+|--------|-----------|---------------|--------|----------|
+| `lossless` | None | None | Full | Archival, print |
+| `standard` | 0.25px adaptive | Curvature-aware | 256 | Web, general use |
+| `compact` | 0.5px adaptive | G²-preserving | 128 | Faster loading |
+| `thumbnail` | 1.0px | Tolerance 1.0 | 64 | Preview only |
+
+---

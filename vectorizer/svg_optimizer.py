@@ -1,11 +1,416 @@
-"""SVG generation and optimization."""
-from typing import List
+"""SVG generation and optimization with curvature preservation."""
+from typing import List, Tuple
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import numpy as np
 
-from vectorizer.types import VectorRegion, RegionKind, GradientType
+from vectorizer.types import VectorRegion, RegionKind, GradientType, BezierCurve, Point
 
+
+# ============================================================================
+# CURVATURE COMPUTATION
+# ============================================================================
+
+def compute_bezier_curvature(curve: BezierCurve, t: float) -> float:
+    """
+    Compute curvature of a cubic Bezier curve at parameter t.
+    
+    Curvature = |x'y'' - y'x''| / (x'^2 + y'^2)^(3/2)
+    
+    Returns:
+        Curvature value (0 for straight line, higher for tighter curves)
+    """
+    # Cubic Bezier: B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+    # First derivative
+    mt = 1 - t
+    
+    # B'(t) = 3(1-t)^2 (P1-P0) + 6(1-t)t (P2-P1) + 3t^2 (P3-P2)
+    dx = 3 * mt**2 * (curve.p1.x - curve.p0.x) + \
+         6 * mt * t * (curve.p2.x - curve.p1.x) + \
+         3 * t**2 * (curve.p3.x - curve.p2.x)
+    dy = 3 * mt**2 * (curve.p1.y - curve.p0.y) + \
+         6 * mt * t * (curve.p2.y - curve.p1.y) + \
+         3 * t**2 * (curve.p3.y - curve.p2.y)
+    
+    # Second derivative
+    # B''(t) = 6(1-t) (P2-2P1+P0) + 6t (P3-2P2+P1)
+    ddx = 6 * mt * (curve.p2.x - 2*curve.p1.x + curve.p0.x) + \
+          6 * t * (curve.p3.x - 2*curve.p2.x + curve.p1.x)
+    ddy = 6 * mt * (curve.p2.y - 2*curve.p1.y + curve.p0.y) + \
+          6 * t * (curve.p3.y - 2*curve.p2.y + curve.p1.y)
+    
+    # Curvature formula
+    denom = (dx**2 + dy**2)**1.5
+    if denom < 1e-10:
+        return 0.0
+    
+    curvature = abs(dx * ddy - dy * ddx) / denom
+    return curvature
+
+
+def compute_curve_max_curvature(curve: BezierCurve, num_samples: int = 10) -> float:
+    """Compute maximum curvature along a Bezier curve."""
+    max_curv = 0.0
+    for i in range(num_samples):
+        t = i / (num_samples - 1) if num_samples > 1 else 0
+        curv = compute_bezier_curvature(curve, t)
+        max_curv = max(max_curv, curv)
+    return max_curv
+
+
+def check_g2_continuity(curve1: BezierCurve, curve2: BezierCurve, tolerance: float = 0.1) -> bool:
+    """
+    Check if two Bezier curves have G² continuity at their join.
+    
+    G² continuity requires:
+    1. Position continuity (end of curve1 == start of curve2)
+    2. Tangent continuity (first derivatives match direction)
+    3. Curvature continuity (curvatures match)
+    
+    Returns:
+        True if curves are G² continuous
+    """
+    # Check position continuity
+    pos_diff = np.sqrt((curve1.p3.x - curve2.p0.x)**2 + (curve1.p3.y - curve2.p0.y)**2)
+    if pos_diff > 0.1:
+        return False
+    
+    # Compute end tangent of curve1 (at t=1)
+    # B'(1) = 3(P3 - P2)
+    tangent1_x = 3 * (curve1.p3.x - curve1.p2.x)
+    tangent1_y = 3 * (curve1.p3.y - curve1.p2.y)
+    
+    # Compute start tangent of curve2 (at t=0)
+    # B'(0) = 3(P1 - P0)
+    tangent2_x = 3 * (curve2.p1.x - curve2.p0.x)
+    tangent2_y = 3 * (curve2.p1.y - curve2.p0.y)
+    
+    # Check tangent direction
+    len1 = np.sqrt(tangent1_x**2 + tangent1_y**2)
+    len2 = np.sqrt(tangent2_x**2 + tangent2_y**2)
+    
+    if len1 < 1e-10 or len2 < 1e-10:
+        return True  # Zero tangent, can't check direction
+    
+    # Normalize and check dot product
+    tx1, ty1 = tangent1_x / len1, tangent1_y / len1
+    tx2, ty2 = tangent2_x / len2, tangent2_y / len2
+    
+    dot = tx1 * tx2 + ty1 * ty2
+    if dot < 0.95:  # Not collinear (allow 18° deviation)
+        return False
+    
+    # Check curvature continuity
+    curv1 = compute_bezier_curvature(curve1, 1.0)
+    curv2 = compute_bezier_curvature(curve2, 0.0)
+    
+    if curv1 > 0.01 or curv2 > 0.01:  # Only check if significant curvature
+        curv_diff = abs(curv1 - curv2) / max(curv1, curv2, 1e-10)
+        if curv_diff > tolerance:
+            return False
+    
+    return True
+
+
+# ============================================================================
+# CURVE-AWARE QUANTIZATION
+# ============================================================================
+
+def quantize_curvature_aware(bezier_curves: List[BezierCurve], base_grid: float = 0.25) -> List[BezierCurve]:
+    """
+    Quantize coordinates with adaptive grid based on curvature.
+    
+    Finer quantization where curvature is high to preserve smooth curves,
+    coarser where nearly straight.
+    
+    Args:
+        bezier_curves: List of BezierCurve objects
+        base_grid: Base grid size (default 0.25 for high quality)
+        
+    Returns:
+        List of quantized BezierCurve objects
+    """
+    quantized = []
+    
+    for curve in bezier_curves:
+        # Compute maximum curvature
+        max_curv = compute_curve_max_curvature(curve, num_samples=5)
+        
+        # Adaptive grid: finer where curved
+        if max_curv > 0.1:  # High curvature
+            grid = base_grid * 0.25  # 0.0625px precision (4x finer)
+        elif max_curv > 0.01:  # Medium curvature
+            grid = base_grid  # 0.25px (standard)
+        else:  # Nearly straight
+            grid = base_grid * 2.0  # 0.5px (can be coarser)
+        
+        def quantize(val):
+            return round(val / grid) * grid
+        
+        q_curve = BezierCurve(
+            p0=Point(quantize(curve.p0.x), quantize(curve.p0.y)),
+            p1=Point(quantize(curve.p1.x), quantize(curve.p1.y)),
+            p2=Point(quantize(curve.p2.x), quantize(curve.p2.y)),
+            p3=Point(quantize(curve.p3.x), quantize(curve.p3.y))
+        )
+        quantized.append(q_curve)
+    
+    return quantized
+
+
+def quantize_coordinates(bezier_curves: List[BezierCurve], grid_size: float = 0.5) -> List[BezierCurve]:
+    """
+    Quantize coordinates to grid (legacy function - prefer curvature-aware).
+    
+    Kept for backward compatibility but now uses curvature-aware internally.
+    """
+    return quantize_curvature_aware(bezier_curves, base_grid=grid_size)
+
+
+# ============================================================================
+# G²-PRESERVING SIMPLIFICATION
+# ============================================================================
+
+def compute_curvature_error(original_curve: BezierCurve, simplified_curve: BezierCurve) -> float:
+    """
+    Compute curvature error between original and simplified curve.
+    
+    Returns maximum curvature difference at sample points.
+    """
+    errors = []
+    for i in range(5):
+        t = i / 4
+        curv_orig = compute_bezier_curvature(original_curve, t)
+        curv_simp = compute_bezier_curvature(simplified_curve, t)
+        errors.append(abs(curv_orig - curv_simp))
+    return max(errors) if errors else 0.0
+
+
+def simplify_g2_preserving(bezier_curves: List[BezierCurve], tolerance: float = 0.5) -> List[BezierCurve]:
+    """
+    Simplify bezier curves while preserving G² continuity.
+    
+    Only simplifies if:
+    1. Curves meet G² continuity at join
+    2. Curvature error is within tolerance
+    3. Geometric deviation is small
+    
+    Args:
+        bezier_curves: List of BezierCurve objects
+        tolerance: Maximum allowed curvature error
+        
+    Returns:
+        Simplified list of curves
+    """
+    if len(bezier_curves) <= 2:
+        return bezier_curves
+    
+    simplified = [bezier_curves[0]]
+    
+    for i in range(1, len(bezier_curves)):
+        curr = bezier_curves[i]
+        prev = simplified[-1]
+        
+        # Check G² continuity first
+        if not check_g2_continuity(prev, curr, tolerance=0.2):
+            # Not G² continuous, keep separate
+            simplified.append(curr)
+            continue
+        
+        # Try to merge curves
+        start = np.array([prev.p0.x, prev.p0.y])
+        end = np.array([curr.p3.x, curr.p3.y])
+        
+        # Control points
+        cp1 = np.array([prev.p1.x, prev.p1.y])
+        cp2 = np.array([prev.p2.x, prev.p2.y])
+        cp3 = np.array([curr.p1.x, curr.p1.y])
+        cp4 = np.array([curr.p2.x, curr.p2.y])
+        
+        # Check geometric deviation from straight line
+        def point_line_distance(point, line_start, line_end):
+            if np.all(line_start == line_end):
+                return np.linalg.norm(point - line_start)
+            return np.linalg.norm(np.cross(line_end - line_start, line_start - point)) / np.linalg.norm(line_end - line_start)
+        
+        max_deviation = max(
+            point_line_distance(cp1, start, end),
+            point_line_distance(cp2, start, end),
+            point_line_distance(cp3, start, end),
+            point_line_distance(cp4, start, end)
+        )
+        
+        # Create merged curve
+        merged = BezierCurve(
+            p0=prev.p0,
+            p1=prev.p1,
+            p2=curr.p2,
+            p3=curr.p3
+        )
+        
+        # Check curvature preservation
+        curvature_err = compute_curvature_error(prev, merged)
+        curvature_err += compute_curvature_error(curr, merged)
+        
+        if max_deviation < tolerance and curvature_err < tolerance * 0.5:
+            # Accept merge
+            simplified[-1] = merged
+        else:
+            simplified.append(curr)
+    
+    return simplified
+
+
+def simplify_bezier_curves(bezier_curves: List[BezierCurve], tolerance: float = 0.5) -> List[BezierCurve]:
+    """
+    Simplify bezier curves (legacy - now uses G²-preserving version).
+    """
+    return simplify_g2_preserving(bezier_curves, tolerance=tolerance)
+
+
+# ============================================================================
+# GRADIENT-AWARE COLOR OPTIMIZATION
+# ============================================================================
+
+def optimize_region_colors(regions: List[VectorRegion], flat_levels: int = 256) -> List[VectorRegion]:
+    """
+    Optimize colors with gradient awareness.
+    
+    Preserves full precision for gradient regions while allowing quantization
+    for flat regions.
+    
+    Args:
+        regions: List of VectorRegion objects
+        flat_levels: Number of quantization levels for flat regions (256 = full)
+        
+    Returns:
+        Regions with optimized colors
+    """
+    from copy import deepcopy
+    
+    optimized = []
+    for region in regions:
+        new_region = deepcopy(region)
+        
+        if region.kind == RegionKind.GRADIENT:
+            # Keep full precision for gradient regions
+            # Don't quantize gradient stops
+            pass
+        elif region.kind == RegionKind.FLAT and region.fill_color is not None:
+            # Can quantize flat regions
+            new_region.fill_color = _quantize_color_safe(region.fill_color, levels=flat_levels)
+        elif region.kind == RegionKind.DETAIL and region.mesh_colors is not None:
+            # Keep detail region colors but can quantize slightly
+            new_region.mesh_colors = np.array([
+                _quantize_color_safe(color, levels=flat_levels)
+                for color in region.mesh_colors
+            ])
+        
+        optimized.append(new_region)
+    
+    return optimized
+
+
+def _quantize_color_safe(color: np.ndarray, levels: int = 256) -> np.ndarray:
+    """Quantize color safely, preserving full range for levels=256."""
+    if levels >= 256:
+        return color  # No quantization
+    
+    if color.max() > 1.0:
+        color = color / 255.0
+    color = np.clip(color, 0, 1)
+    
+    step = 1.0 / (levels - 1)
+    quantized = np.round(color / step) * step
+    return np.clip(quantized, 0, 1)
+
+
+# ============================================================================
+# OPTIMIZATION PRESETS
+# ============================================================================
+
+class OptimizationPreset:
+    """Configuration for different optimization levels."""
+    
+    def __init__(self, name: str, quantization: float, simplification: float, 
+                 color_levels: int, use_curvature_aware: bool = True):
+        self.name = name
+        self.quantization = quantization  # Base grid size
+        self.simplification = simplification  # Tolerance
+        self.color_levels = color_levels
+        self.use_curvature_aware = use_curvature_aware
+
+
+# Preset configurations
+PRESETS = {
+    'lossless': OptimizationPreset(
+        name='lossless',
+        quantization=0.0,  # No quantization
+        simplification=0.0,  # No simplification
+        color_levels=256,  # Full color
+        use_curvature_aware=False
+    ),
+    'standard': OptimizationPreset(
+        name='standard',
+        quantization=0.25,  # Fine grid
+        simplification=0.5,  # Moderate simplification
+        color_levels=256,  # Full color
+        use_curvature_aware=True
+    ),
+    'compact': OptimizationPreset(
+        name='compact',
+        quantization=0.5,  # Standard grid
+        simplification=1.0,  # More simplification
+        color_levels=128,  # Reduced colors
+        use_curvature_aware=True
+    ),
+    'thumbnail': OptimizationPreset(
+        name='thumbnail',
+        quantization=1.0,  # Coarse grid
+        simplification=2.0,  # Aggressive simplification
+        color_levels=64,  # Few colors
+        use_curvature_aware=True
+    )
+}
+
+
+def apply_optimization_preset(regions: List[VectorRegion], preset: OptimizationPreset) -> List[VectorRegion]:
+    """Apply an optimization preset to regions."""
+    from copy import deepcopy
+    
+    processed = []
+    
+    for region in regions:
+        if not region.path:
+            continue
+        
+        new_region = deepcopy(region)
+        curves = region.path
+        
+        # Apply simplification if tolerance > 0
+        if preset.simplification > 0:
+            curves = simplify_g2_preserving(curves, tolerance=preset.simplification)
+        
+        # Apply quantization if grid > 0
+        if preset.quantization > 0:
+            if preset.use_curvature_aware:
+                curves = quantize_curvature_aware(curves, base_grid=preset.quantization)
+            else:
+                curves = quantize_coordinates(curves, grid_size=preset.quantization)
+        
+        new_region.path = curves
+        processed.append(new_region)
+    
+    # Apply color optimization
+    if preset.color_levels < 256:
+        processed = optimize_region_colors(processed, flat_levels=preset.color_levels)
+    
+    return processed
+
+
+# ============================================================================
+# SVG GENERATION
+# ============================================================================
 
 def regions_to_svg(
     regions: List[VectorRegion],
@@ -34,7 +439,7 @@ def regions_to_svg(
 
 
 def _regions_to_svg_compact(regions, width, height, precision):
-    """Generate compact (minified) SVG output with aggressive optimizations."""
+    """Generate compact (minified) SVG output with safe optimizations."""
     # Group regions by fill color to minimize attribute repetition
     color_groups = {}
     gradients = []
@@ -62,25 +467,19 @@ def _regions_to_svg_compact(regions, width, height, precision):
                 color_groups[color] = []
             color_groups[color].append(region)
     
-    # Merge similar colors (within tolerance) to reduce groups
-    color_groups = _merge_similar_colors(color_groups, tolerance=0.02)
-    
-    # Build compact SVG string manually for maximum compression
-    # Remove width/height if same as viewBox (redundant)
+    # Build compact SVG string manually
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
     
     # Add gradient definitions if needed with shortest IDs
     if gradients:
         parts.append('<defs>')
         for i, region in enumerate(gradients):
-            # Use shortest possible IDs: a, b, c, ... z, aa, ab, etc.
             grad_id = _short_id(i)
             parts.append(_create_gradient_def_compact(region, grad_id))
         parts.append('</defs>')
     
     # Output paths grouped by fill color
     for color, group in color_groups.items():
-        # Multiple paths with same color - use group
         if len(group) > 1:
             parts.append(f'<g fill="{color}">')
             for region in group:
@@ -88,7 +487,6 @@ def _regions_to_svg_compact(regions, width, height, precision):
                 parts.append(f'<path d="{path_data}"/>')
             parts.append('</g>')
         else:
-            # Single path
             region = group[0]
             path_data = _bezier_to_svg_path(region.path, precision, use_relative=True)
             parts.append(f'<path d="{path_data}" fill="{color}"/>')
@@ -112,144 +510,34 @@ def _short_id(n):
         return _short_id(n // 26 - 1) + chr(ord('a') + (n % 26))
 
 
-def _merge_similar_colors(color_groups, tolerance=0.02):
-    """Merge color groups with similar colors to reduce repetition."""
-    if len(color_groups) <= 1:
-        return color_groups
+def _color_to_hex_compact(color: np.ndarray) -> str:
+    """Convert RGB color to compact hex string with 3-digit shorthand when possible."""
+    if color.max() > 1.0:
+        color = color / 255.0
+    color = np.clip(color, 0, 1)
+    rgb = (color * 255).astype(int)
+    r, g, b = rgb[0], rgb[1], rgb[2]
     
-    colors = list(color_groups.keys())
-    merged = {}
-    used = set()
-    
-    for i, color1 in enumerate(colors):
-        if color1 in used:
-            continue
-        
-        # Parse color
-        r1, g1, b1 = _hex_to_rgb(color1)
-        merged_regions = list(color_groups[color1])
-        
-        # Find similar colors
-        for j in range(i + 1, len(colors)):
-            color2 = colors[j]
-            if color2 in used:
-                continue
-            
-            r2, g2, b2 = _hex_to_rgb(color2)
-            
-            # Check if colors are similar
-            if (abs(r1 - r2) < tolerance and 
-                abs(g1 - g2) < tolerance and 
-                abs(b1 - b2) < tolerance):
-                merged_regions.extend(color_groups[color2])
-                used.add(color2)
-        
-        # Use first color as representative
-        merged[color1] = merged_regions
-        used.add(color1)
-    
-    return merged
-
-
-def _hex_to_rgb(hex_color):
-    """Convert hex color to RGB tuple."""
-    hex_color = hex_color.lstrip('#')
-    if len(hex_color) == 3:
-        r = int(hex_color[0] + hex_color[0], 16) / 255.0
-        g = int(hex_color[1] + hex_color[1], 16) / 255.0
-        b = int(hex_color[2] + hex_color[2], 16) / 255.0
+    if (r % 17 == 0) and (g % 17 == 0) and (b % 17 == 0):
+        return f'#{r//17:x}{g//17:x}{b//17:x}'
     else:
-        r = int(hex_color[0:2], 16) / 255.0
-        g = int(hex_color[2:4], 16) / 255.0
-        b = int(hex_color[4:6], 16) / 255.0
-    return (r, g, b)
-
-
-def _regions_to_svg_pretty(regions, width, height, precision):
-    """Generate pretty-printed SVG output."""
-    # Create SVG root element
-    svg = ET.Element('svg')
-    svg.set('xmlns', 'http://www.w3.org/2000/svg')
-    svg.set('width', str(width))
-    svg.set('height', str(height))
-    svg.set('viewBox', f'0 0 {width} {height}')
-    
-    # Create defs for gradients
-    defs = ET.SubElement(svg, 'defs')
-    
-    # Track gradient IDs
-    gradient_id = 0
-    
-    # Add regions
-    for region in regions:
-        if not region.path:
-            continue
-        
-        # Convert path to SVG path data
-        path_data = _bezier_to_svg_path(region.path, precision, use_relative=False)
-        
-        # Create path element
-        path_elem = ET.SubElement(svg, 'path')
-        path_elem.set('d', path_data)
-        
-        # Set fill based on region kind
-        if region.kind == RegionKind.FLAT and region.fill_color is not None:
-            color = _color_to_hex_compact(region.fill_color)
-            path_elem.set('fill', color)
-        
-        elif region.kind == RegionKind.GRADIENT and region.gradient_type is not None:
-            # Create gradient definition
-            grad_id = f'gradient_{gradient_id}'
-            gradient_id += 1
-            
-            _create_gradient_def(defs, region, grad_id)
-            path_elem.set('fill', f'url(#{grad_id})')
-        
-        elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
-            # For detail regions, we need to create mesh gradient
-            grad_id = f'mesh_{gradient_id}'
-            gradient_id += 1
-            
-            # Use average color as fallback
-            avg_color = np.mean(region.mesh_colors, axis=0)
-            path_elem.set('fill', _color_to_hex_compact(avg_color))
-        
-        else:
-            # Default fill
-            path_elem.set('fill', '#808080')
-    
-    # Convert to string
-    svg_string = ET.tostring(svg, encoding='unicode')
-    
-    # Pretty print
-    dom = minidom.parseString(svg_string)
-    pretty_xml = dom.toprettyxml(indent='  ')
-    
-    # Remove extra blank lines
-    lines = [line for line in pretty_xml.split('\n') if line.strip()]
-    
-    return '\n'.join(lines)
+        return f'#{r:02x}{g:02x}{b:02x}'
 
 
 def _bezier_to_svg_path(bezier_curves, precision: int = 2, use_relative: bool = True) -> str:
-    """Convert bezier curves to SVG path data string with optimization."""
+    """Convert bezier curves to SVG path data string."""
     if not bezier_curves:
         return ''
     
     fmt = f'{{:.{precision}f}}'
     
-    # Start at first point
     p0 = bezier_curves[0].p0
     path_data = f'M{fmt.format(p0.x)},{fmt.format(p0.y)}'
     
-    # Track current position for relative coordinates
     curr_x, curr_y = p0.x, p0.y
     
-    # Add each curve
     for curve in bezier_curves:
         if use_relative:
-            # Use relative cubic bezier (c) - coordinates relative to current position
-            # Format: c dx1,dy1 dx2,dy2 dx,dy
             dx1 = curve.p1.x - curr_x
             dy1 = curve.p1.y - curr_y
             dx2 = curve.p2.x - curve.p1.x
@@ -257,170 +545,34 @@ def _bezier_to_svg_path(bezier_curves, precision: int = 2, use_relative: bool = 
             dx = curve.p3.x - curve.p2.x
             dy = curve.p3.y - curve.p2.y
             
-            # Build compact relative path
             path_data += f'c{_fmt_compact(dx1)},{_fmt_compact(dy1)} {_fmt_compact(dx2)},{_fmt_compact(dy2)} {_fmt_compact(dx)},{_fmt_compact(dy)}'
             
-            # Update current position
             curr_x, curr_y = curve.p3.x, curve.p3.y
         else:
-            # Absolute coordinates
             path_data += (
                 f'C{fmt.format(curve.p1.x)},{fmt.format(curve.p1.y)} '
                 f'{fmt.format(curve.p2.x)},{fmt.format(curve.p2.y)} '
                 f'{fmt.format(curve.p3.x)},{fmt.format(curve.p3.y)}'
             )
     
-    # Close path
     path_data += 'z'
-    
     return path_data
 
 
 def _fmt_compact(value: float, max_precision: int = 2) -> str:
-    """Format number compactly - remove trailing zeros and use optimal precision."""
-    # Round to remove floating point noise
+    """Format number compactly - remove trailing zeros."""
     value = round(value, 10)
     
-    # Use scientific notation for very small numbers (avoid scientific notation output)
     if abs(value) < 0.0001 and value != 0:
         value = 0.0
     
-    # Format with specified precision
     s = f'{value:.{max_precision}f}'
-    
-    # Remove trailing zeros
     s = s.rstrip('0').rstrip('.')
     
-    # Handle negative zero
     if s == '-0':
         s = '0'
     
     return s
-
-
-def simplify_bezier_curves(bezier_curves, tolerance: float = 0.5):
-    """Simplify bezier curves by removing redundant control points.
-    
-    Uses Ramer-Douglas-Peucker-like algorithm adapted for Bezier curves.
-    Returns simplified list of curves.
-    """
-    if len(bezier_curves) <= 2:
-        return bezier_curves
-    
-    simplified = [bezier_curves[0]]
-    
-    for i in range(1, len(bezier_curves)):
-        curr = bezier_curves[i]
-        prev = simplified[-1]
-        
-        # Check if current curve adds significant detail
-        # Approximate by checking control point deviation from straight line
-        start = np.array([prev.p0.x, prev.p0.y])
-        end = np.array([curr.p3.x, curr.p3.y])
-        
-        # Mid control points
-        cp1 = np.array([prev.p1.x, prev.p1.y])
-        cp2 = np.array([prev.p2.x, prev.p2.y])
-        cp3 = np.array([curr.p1.x, curr.p1.y])
-        cp4 = np.array([curr.p2.x, curr.p2.y])
-        
-        # Check deviation from straight line
-        def point_line_distance(point, line_start, line_end):
-            if np.all(line_start == line_end):
-                return np.linalg.norm(point - line_start)
-            return np.linalg.norm(np.cross(line_end - line_start, line_start - point)) / np.linalg.norm(line_end - line_start)
-        
-        # If curves are roughly collinear, try to merge
-        max_deviation = max(
-            point_line_distance(cp1, start, end),
-            point_line_distance(cp2, start, end),
-            point_line_distance(cp3, start, end),
-            point_line_distance(cp4, start, end)
-        )
-        
-        if max_deviation < tolerance:
-            # Merge curves - replace last curve with new combined one
-            # Simple approach: just extend to current end point
-            from vectorizer.types import BezierCurve
-            merged = BezierCurve(
-                p0=prev.p0,
-                p1=prev.p1,
-                p2=curr.p2,
-                p3=curr.p3
-            )
-            simplified[-1] = merged
-        else:
-            simplified.append(curr)
-    
-    return simplified
-
-
-def _color_to_hex(color: np.ndarray) -> str:
-    """Convert RGB color to hex string."""
-    return _color_to_hex_compact(color)
-
-
-def _color_to_hex_compact(color: np.ndarray) -> str:
-    """Convert RGB color to compact hex string with 3-digit shorthand when possible."""
-    # Ensure color is in [0, 1] range
-    if hasattr(color, 'max') and color.max() > 1.0:
-        color = color / 255.0
-    
-    # Clamp to [0, 1]
-    color = np.clip(color, 0, 1)
-    
-    # Convert to 0-255
-    rgb = (color * 255).astype(int)
-    r, g, b = rgb[0], rgb[1], rgb[2]
-    
-    # Check if we can use 3-digit shorthand
-    if (r % 17 == 0) and (g % 17 == 0) and (b % 17 == 0):
-        # Use shorthand: #RGB
-        return f'#{r//17:x}{g//17:x}{b//17:x}'
-    else:
-        # Use full 6-digit: #RRGGBB
-        return f'#{r:02x}{g:02x}{b:02x}'
-
-
-def _create_gradient_def(defs, region: VectorRegion, grad_id: str):
-    """Create gradient definition element."""
-    if region.gradient_type == GradientType.LINEAR:
-        grad = ET.SubElement(defs, 'linearGradient')
-        grad.set('id', grad_id)
-        
-        if region.gradient_start and region.gradient_end:
-            grad.set('x1', str(region.gradient_start.x))
-            grad.set('y1', str(region.gradient_start.y))
-            grad.set('x2', str(region.gradient_end.x))
-            grad.set('y2', str(region.gradient_end.y))
-        else:
-            # Default gradient direction (left to right)
-            grad.set('x1', '0%')
-            grad.set('y1', '0%')
-            grad.set('x2', '100%')
-            grad.set('y2', '0%')
-    
-    elif region.gradient_type == GradientType.RADIAL:
-        grad = ET.SubElement(defs, 'radialGradient')
-        grad.set('id', grad_id)
-        
-        if region.gradient_center:
-            grad.set('cx', str(region.gradient_center.x))
-            grad.set('cy', str(region.gradient_center.y))
-        
-        if region.gradient_radius:
-            grad.set('r', str(region.gradient_radius))
-    
-    else:
-        # Default to linear
-        grad = ET.SubElement(defs, 'linearGradient')
-        grad.set('id', grad_id)
-    
-    # Add color stops
-    for stop in region.gradient_stops:
-        stop_elem = ET.SubElement(grad, 'stop')
-        stop_elem.set('offset', f'{stop.offset * 100:.1f}%')
-        stop_elem.set('stop-color', _color_to_hex(stop.color))
 
 
 def _create_gradient_def_compact(region: VectorRegion, grad_id: str) -> str:
@@ -440,48 +592,181 @@ def _create_gradient_def_compact(region: VectorRegion, grad_id: str) -> str:
     else:
         grad_def = f'<linearGradient id="{grad_id}">'
     
-    # Add color stops
     stops = []
     for stop in region.gradient_stops:
-        offset = f'{stop.offset * 100:g}%'  # Use %g to remove trailing zeros
+        offset = f'{stop.offset * 100:g}%'
         color = _color_to_hex_compact(stop.color)
         stops.append(f'<stop offset="{offset}" stop-color="{color}"/>')
     
     return grad_def + ''.join(stops) + '</linearGradient>'
 
 
-def optimize_svg(svg_string: str) -> str:
+def _regions_to_svg_pretty(regions, width, height, precision):
+    """Generate pretty-printed SVG output."""
+    svg = ET.Element('svg')
+    svg.set('xmlns', 'http://www.w3.org/2000/svg')
+    svg.set('width', str(width))
+    svg.set('height', str(height))
+    svg.set('viewBox', f'0 0 {width} {height}')
+    
+    defs = ET.SubElement(svg, 'defs')
+    gradient_id = 0
+    
+    for region in regions:
+        if not region.path:
+            continue
+        
+        path_data = _bezier_to_svg_path(region.path, precision, use_relative=False)
+        path_elem = ET.SubElement(svg, 'path')
+        path_elem.set('d', path_data)
+        
+        if region.kind == RegionKind.FLAT and region.fill_color is not None:
+            color = _color_to_hex_compact(region.fill_color)
+            path_elem.set('fill', color)
+        elif region.kind == RegionKind.GRADIENT and region.gradient_type is not None:
+            grad_id = f'gradient_{gradient_id}'
+            gradient_id += 1
+            _create_gradient_def(defs, region, grad_id)
+            path_elem.set('fill', f'url(#{grad_id})')
+        elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
+            avg_color = np.mean(region.mesh_colors, axis=0)
+            path_elem.set('fill', _color_to_hex_compact(avg_color))
+        else:
+            path_elem.set('fill', '#808080')
+    
+    svg_string = ET.tostring(svg, encoding='unicode')
+    dom = minidom.parseString(svg_string)
+    pretty_xml = dom.toprettyxml(indent='  ')
+    lines = [line for line in pretty_xml.split('\n') if line.strip()]
+    
+    return '\n'.join(lines)
+
+
+def _create_gradient_def(defs, region: VectorRegion, grad_id: str):
+    """Create gradient definition element."""
+    if region.gradient_type == GradientType.LINEAR:
+        grad = ET.SubElement(defs, 'linearGradient')
+        grad.set('id', grad_id)
+        if region.gradient_start and region.gradient_end:
+            grad.set('x1', str(region.gradient_start.x))
+            grad.set('y1', str(region.gradient_start.y))
+            grad.set('x2', str(region.gradient_end.x))
+            grad.set('y2', str(region.gradient_end.y))
+    elif region.gradient_type == GradientType.RADIAL:
+        grad = ET.SubElement(defs, 'radialGradient')
+        grad.set('id', grad_id)
+        if region.gradient_center:
+            grad.set('cx', str(region.gradient_center.x))
+            grad.set('cy', str(region.gradient_center.y))
+        if region.gradient_radius:
+            grad.set('r', str(region.gradient_radius))
+    else:
+        grad = ET.SubElement(defs, 'linearGradient')
+        grad.set('id', grad_id)
+    
+    for stop in region.gradient_stops:
+        stop_elem = ET.SubElement(grad, 'stop')
+        stop_elem.set('offset', f'{stop.offset * 100:.1f}%')
+        stop_elem.set('stop-color', _color_to_hex_compact(stop.color))
+
+
+# ============================================================================
+# LEGACY FUNCTIONS (DEPRECATED - KEEP FOR COMPATIBILITY)
+# ============================================================================
+
+def generate_ultra_compressed_svg(regions, width, height):
+    """DEPRECATED: Use generate_optimized_svg with 'compact' preset instead."""
+    return generate_optimized_svg(regions, width, height, preset_name='compact')
+
+
+def generate_extreme_svg(regions, width, height):
+    """DEPRECATED: Use generate_optimized_svg with 'thumbnail' preset instead."""
+    return generate_optimized_svg(regions, width, height, preset_name='thumbnail')
+
+
+def generate_merged_svg(regions, width, height):
+    """DEPRECATED: Use standard optimization instead."""
+    return generate_optimized_svg(regions, width, height, preset_name='standard')
+
+
+def generate_symbol_optimized_svg(regions, width, height):
+    """DEPRECATED: Symbol optimization disabled for quality preservation."""
+    return generate_optimized_svg(regions, width, height, preset_name='standard')
+
+
+def generate_insane_svg(regions, width, height):
+    """REMOVED: This mode caused unacceptable quality loss. Use 'thumbnail' preset."""
+    raise NotImplementedError(
+        "generate_insane_svg has been removed due to quality issues. "
+        "Use generate_optimized_svg with preset='thumbnail' for maximum compression."
+    )
+
+
+def generate_monochrome_svg(regions, width, height):
+    """REMOVED: This mode destroyed all color information."""
+    raise NotImplementedError(
+        "generate_monochrome_svg has been removed due to quality issues. "
+        "Use external tools for monochrome conversion."
+    )
+
+
+# ============================================================================
+# MAIN OPTIMIZATION FUNCTION
+# ============================================================================
+
+def generate_optimized_svg(
+    regions,
+    width,
+    height,
+    preset_name: str = 'standard',
+    quantization_grid: float = None,
+    simplify_tolerance: float = None,
+    base_precision: int = 2
+) -> str:
     """
-    Optimize SVG by removing unnecessary precision and whitespace.
+    Generate optimized SVG with curvature-preserving compression.
     
     Args:
-        svg_string: Input SVG string
+        regions: List of VectorRegion objects
+        width: SVG width
+        height: SVG height
+        preset_name: One of 'lossless', 'standard', 'compact', 'thumbnail'
+        quantization_grid: Override preset quantization (optional)
+        simplify_tolerance: Override preset simplification (optional)
+        base_precision: Decimal precision for coordinates (default 2)
         
     Returns:
         Optimized SVG string
     """
-    # Parse SVG
-    root = ET.fromstring(svg_string)
+    if preset_name not in PRESETS:
+        raise ValueError(f"Unknown preset: {preset_name}. Use: {list(PRESETS.keys())}")
     
-    # Remove whitespace text nodes
-    _remove_whitespace(root)
+    preset = PRESETS[preset_name]
     
-    # Convert back to string
-    svg_string = ET.tostring(root, encoding='unicode')
+    # Allow parameter overrides
+    if quantization_grid is not None:
+        preset = OptimizationPreset(
+            name=preset.name,
+            quantization=quantization_grid,
+            simplification=preset.simplification,
+            color_levels=preset.color_levels,
+            use_curvature_aware=preset.use_curvature_aware
+        )
     
-    return svg_string
-
-
-def _remove_whitespace(element):
-    """Remove whitespace-only text nodes from XML tree."""
-    if element.text and not element.text.strip():
-        element.text = None
+    if simplify_tolerance is not None:
+        preset = OptimizationPreset(
+            name=preset.name,
+            quantization=preset.quantization,
+            simplification=simplify_tolerance,
+            color_levels=preset.color_levels,
+            use_curvature_aware=preset.use_curvature_aware
+        )
     
-    if element.tail and not element.tail.strip():
-        element.tail = None
+    # Apply optimizations
+    processed = apply_optimization_preset(regions, preset)
     
-    for child in element:
-        _remove_whitespace(child)
+    # Generate SVG
+    return _regions_to_svg_compact(processed, width, height, base_precision)
 
 
 def get_svg_size(svg_string: str) -> int:
@@ -489,653 +774,18 @@ def get_svg_size(svg_string: str) -> int:
     return len(svg_string.encode('utf-8'))
 
 
-def generate_ultra_compressed_svg(regions, width, height):
-    """Generate ultra-compressed SVG with maximum size reduction.
-    
-    WARNING: This may reduce visual quality. Use for maximum compression only.
-    
-    Applies:
-    - 1-pixel coordinate quantization
-    - 0 decimal precision (integers only)
-    - Aggressive color merging (5% tolerance)
-    - Path deduplication
-    - Ultra-compact number formatting
-    """
-    from copy import deepcopy
-    
-    # Process regions with aggressive quantization
-    processed_regions = []
-    for region in regions:
-        if not region.path:
-            continue
-        
-        # Ultra-aggressive: 1px grid, simplify with tolerance
-        simplified = simplify_bezier_curves(region.path, tolerance=1.0)
-        quantized = quantize_coordinates(simplified, grid_size=1.0)
-        
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed_regions.append(new_region)
-    
-    # Build ultra-compact SVG with 0 precision
-    return _build_ultra_compact_svg(processed_regions, width, height)
+def optimize_svg(svg_string: str) -> str:
+    """Optimize SVG by removing unnecessary whitespace."""
+    root = ET.fromstring(svg_string)
+    _remove_whitespace(root)
+    return ET.tostring(root, encoding='unicode')
 
 
-def _build_ultra_compact_svg(regions, width, height):
-    """Build SVG with maximum compression (0 decimal places)."""
-    # Group by color with aggressive merging
-    color_groups = {}
-    for region in regions:
-        if not region.path:
-            continue
-        
-        if region.fill_color is not None:
-            # Quantize color to reduce palette
-            color = _quantize_color(region.fill_color, levels=16)
-            color_hex = _color_to_hex_compact(color)
-            if color_hex not in color_groups:
-                color_groups[color_hex] = []
-            color_groups[color_hex].append(region)
-    
-    # Build SVG
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
-    
-    # Group paths by color
-    for color, group in color_groups.items():
-        if len(group) > 1:
-            parts.append(f'<g fill="{color}">')
-            for region in group:
-                path_data = _bezier_to_svg_path_ultra(region.path)
-                parts.append(f'<path d="{path_data}"/>')
-            parts.append('</g>')
-        else:
-            region = group[0]
-            path_data = _bezier_to_svg_path_ultra(region.path)
-            parts.append(f'<path d="{path_data}" fill="{color}"/>')
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def _bezier_to_svg_path_ultra(bezier_curves):
-    """Convert bezier curves to ultra-compact path (integers only)."""
-    if not bezier_curves:
-        return ''
-    
-    # Start at first point (as integers)
-    p0 = bezier_curves[0].p0
-    path_data = f'M{int(round(p0.x))},{int(round(p0.y))}'
-    
-    curr_x, curr_y = int(round(p0.x)), int(round(p0.y))
-    
-    for curve in bezier_curves:
-        # Use relative coordinates (all integers)
-        dx1 = int(round(curve.p1.x)) - curr_x
-        dy1 = int(round(curve.p1.y)) - curr_y
-        dx2 = int(round(curve.p2.x)) - int(round(curve.p1.x))
-        dy2 = int(round(curve.p2.y)) - int(round(curve.p1.y))
-        dx = int(round(curve.p3.x)) - int(round(curve.p2.x))
-        dy = int(round(curve.p3.y)) - int(round(curve.p2.y))
-        
-        path_data += f'c{dx1},{dy1} {dx2},{dy2} {dx},{dy}'
-        
-        curr_x = int(round(curve.p3.x))
-        curr_y = int(round(curve.p3.y))
-    
-    path_data += 'z'
-    return path_data
-
-
-def _quantize_color(color, levels=16):
-    """Quantize color to reduce palette size."""
-    if color.max() > 1.0:
-        color = color / 255.0
-    color = np.clip(color, 0, 1)
-    
-    # Quantize to specified levels
-    step = 1.0 / (levels - 1)
-    quantized = np.round(color / step) * step
-    return np.clip(quantized, 0, 1)
-
-
-def deduplicate_paths(regions):
-    """Deduplicate identical path data across regions.
-    
-    Returns dict mapping path signatures to lists of regions with that path.
-    """
-    path_groups = {}
-    
-    for region in regions:
-        if not region.path:
-            continue
-        
-        # Create path signature from curve data
-        sig_parts = []
-        for curve in region.path:
-            # Quantize to integers for comparison
-            sig_parts.extend([
-                int(round(curve.p0.x)), int(round(curve.p0.y)),
-                int(round(curve.p1.x)), int(round(curve.p1.y)),
-                int(round(curve.p2.x)), int(round(curve.p2.y)),
-                int(round(curve.p3.x)), int(round(curve.p3.y)),
-            ])
-        
-        sig = tuple(sig_parts)
-        
-        if sig not in path_groups:
-            path_groups[sig] = []
-        path_groups[sig].append(region)
-    
-    return path_groups
-
-
-def merge_adjacent_paths(regions):
-    """Merge adjacent paths with same fill color into single path.
-    
-    This reduces the number of path elements by combining them.
-    """
-    if not regions:
-        return regions
-    
-    # Sort regions by color
-    def get_color_key(r):
-        if r.fill_color is not None:
-            c = _quantize_color(r.fill_color, 16)
-            return _color_to_hex_compact(c)
-        return '#808080'
-    
-    sorted_regions = sorted(regions, key=get_color_key)
-    
-    merged = []
-    current_color = None
-    current_path = []
-    
-    for region in sorted_regions:
-        if not region.path:
-            continue
-        
-        color = get_color_key(region)
-        
-        if color == current_color:
-            # Same color, append path
-            current_path.extend(region.path)
-        else:
-            # Different color, save current and start new
-            if current_path:
-                from copy import deepcopy
-                new_region = deepcopy(sorted_regions[0])  # Template
-                new_region.path = current_path
-                new_region.fill_color = regions[0].fill_color if regions else None
-                merged.append(new_region)
-            
-            current_color = color
-            current_path = list(region.path)
-    
-    # Don't forget the last group
-    if current_path:
-        from copy import deepcopy
-        new_region = deepcopy(sorted_regions[0])
-        new_region.path = current_path
-        new_region.fill_color = regions[0].fill_color if regions else None
-        merged.append(new_region)
-    
-    return merged
-
-
-def generate_merged_svg(regions, width, height):
-    """Generate SVG with merged adjacent paths of same color."""
-    from copy import deepcopy
-    
-    # Process regions
-    processed = []
-    for region in regions:
-        if not region.path:
-            continue
-        simplified = simplify_bezier_curves(region.path, tolerance=1.0)
-        quantized = quantize_coordinates(simplified, grid_size=1.0)
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed.append(new_region)
-    
-    # Merge ALL same-color paths globally (not just adjacent)
-    merged = merge_all_same_color_paths(processed)
-    
-    # Build SVG with minimal syntax
-    # Remove xmlns (implied in HTML5), use single quotes, no spaces
-    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
-    
-    for region in merged:
-        if not region.path:
-            continue
-        
-        if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
-        else:
-            color = '#808080'
-        
-        # Use ultra-compact path generation
-        path_data = _bezier_to_svg_path_minimal(region.path)
-        parts.append(f"<path d='{path_data}' fill='{color}'/>")
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def generate_extreme_svg(regions, width, height):
-    """Generate extremely compressed SVG with maximum aggression.
-    
-    WARNING: Significant quality loss likely. Use only when size is critical.
-    """
-    from copy import deepcopy
-    
-    # Process with maximum aggression
-    processed = []
-    for region in regions:
-        if not region.path:
-            continue
-        # Very aggressive simplification
-        simplified = simplify_bezier_curves(region.path, tolerance=2.0)
-        # 2px quantization
-        quantized = quantize_coordinates(simplified, grid_size=2.0)
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed.append(new_region)
-    
-    # Merge with only 8 color levels (very aggressive)
-    merged = merge_all_same_color_paths(processed, color_levels=8)
-    
-    # Build minimal SVG
-    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
-    
-    for region in merged:
-        if not region.path:
-            continue
-        
-        if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, 8))
-        else:
-            color = '#808080'
-        
-        path_data = _bezier_to_svg_path_minimal(region.path)
-        parts.append(f"<path d='{path_data}' fill='{color}'/>")
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def generate_insane_svg(regions, width, height):
-    """Generate INSANE compression SVG with maximum possible reduction.
-    
-    WARNING: MASSIVE quality loss expected. Only for extreme size constraints.
-    Uses 4-level color palette and 4px grid.
-    """
-    from copy import deepcopy
-    
-    # Maximum aggression processing
-    processed = []
-    for region in regions:
-        if not region.path:
-            continue
-        # Extreme simplification
-        simplified = simplify_bezier_curves(region.path, tolerance=4.0)
-        # 4px quantization - very coarse
-        quantized = quantize_coordinates(simplified, grid_size=4.0)
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed.append(new_region)
-    
-    # Merge with only 4 color levels (insane)
-    merged = merge_all_same_color_paths(processed, color_levels=4)
-    
-    # Build minimal SVG
-    parts = [f"<svg viewBox='0 0 {width} {height}'>"]
-    
-    for region in merged:
-        if not region.path:
-            continue
-        
-        if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, 4))
-        else:
-            color = '#888'
-        
-        path_data = _bezier_to_svg_path_minimal(region.path)
-        parts.append(f"<path d='{path_data}' fill='{color}'/>")
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def generate_monochrome_svg(regions, width, height):
-    """Generate MONOCHROME SVG - only black and white!
-    
-    WARNING: EXTREME quality loss. Only for maximum compression.
-    Converts all colors to black or white based on luminance.
-    """
-    from copy import deepcopy
-    
-    # Maximum aggression processing
-    processed = []
-    for region in regions:
-        if not region.path:
-            continue
-        # Maximum simplification
-        simplified = simplify_bezier_curves(region.path, tolerance=8.0)
-        # 8px quantization - extremely coarse
-        quantized = quantize_coordinates(simplified, grid_size=8.0)
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed.append(new_region)
-    
-    # Group by luminance (black vs white)
-    black_paths = []
-    white_paths = []
-    
-    for region in processed:
-        if not region.path:
-            continue
-        
-        # Calculate luminance
-        if region.fill_color is not None:
-            color = region.fill_color
-            if color.max() > 1.0:
-                color = color / 255.0
-            luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
-            
-            if luminance < 0.5:
-                black_paths.extend(region.path)
-            else:
-                white_paths.extend(region.path)
-    
-    # Build minimal monochrome SVG
-    parts = [f"<svg viewBox='0 0 {width} {height}' style='background:#fff'>"]
-    
-    # Black paths only (white is background)
-    if black_paths:
-        from vectorizer.types import VectorRegion, RegionKind
-        import numpy as np
-        black_region = VectorRegion(kind=RegionKind.FLAT, path=black_paths, fill_color=np.array([0, 0, 0]))
-        path_data = _bezier_to_svg_path_minimal(black_paths)
-        parts.append(f"<path d='{path_data}' fill='#000'/>")
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def merge_all_same_color_paths(regions, color_levels=8):
-    """Merge ALL paths with same color globally (not just adjacent).
-    
-    Args:
-        regions: List of regions
-        color_levels: Number of color quantization levels (8 = aggressive, 16 = normal)
-    """
-    # Group by quantized color
-    color_groups = {}
-    
-    for region in regions:
-        if not region.path:
-            continue
-        
-        if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, color_levels))
-        else:
-            color = '#808080'
-        
-        if color not in color_groups:
-            color_groups[color] = []
-        color_groups[color].extend(region.path)
-    
-    # Create merged regions
-    merged = []
-    for color, path in color_groups.items():
-        from vectorizer.types import VectorRegion, RegionKind
-        import numpy as np
-        
-        region = VectorRegion(
-            kind=RegionKind.FLAT,
-            path=path,
-            fill_color=np.array([0.5, 0.5, 0.5])  # Placeholder
-        )
-        merged.append(region)
-    
-    return merged
-
-
-def _bezier_to_svg_path_minimal(bezier_curves):
-    """Convert to absolute minimal path data (no spaces, single quotes)."""
-    if not bezier_curves:
-        return ''
-    
-    # Use integers only, no spaces, compact format
-    p0 = bezier_curves[0].p0
-    path_data = f'M{int(round(p0.x))},{int(round(p0.y))}'
-    
-    curr_x, curr_y = int(round(p0.x)), int(round(p0.y))
-    
-    for curve in bezier_curves:
-        # Relative coordinates
-        p1x, p1y = int(round(curve.p1.x)), int(round(curve.p1.y))
-        p2x, p2y = int(round(curve.p2.x)), int(round(curve.p2.y))
-        p3x, p3y = int(round(curve.p3.x)), int(round(curve.p3.y))
-        
-        dx1, dy1 = p1x - curr_x, p1y - curr_y
-        dx2, dy2 = p2x - p1x, p2y - p1y
-        dx, dy = p3x - p2x, p3y - p2y
-        
-        # No spaces between numbers, comma is separator
-        path_data += f'c{dx1},{dy1},{dx2},{dy2},{dx},{dy}'
-        
-        curr_x, curr_y = p3x, p3y
-    
-    path_data += 'z'
-    return path_data
-
-
-def generate_symbol_optimized_svg(regions, width, height):
-    """Generate SVG with symbol reuse for duplicate paths.
-    
-    Uses SVG <symbol> and <use> elements to avoid repeating identical path data.
-    Best for images with many repeated shapes (patterns, icons, etc.).
-    """
-    from copy import deepcopy
-    
-    # Process regions with standard quantization
-    processed = []
-    for region in regions:
-        if not region.path:
-            continue
-        simplified = simplify_bezier_curves(region.path, tolerance=0.5)
-        quantized = quantize_coordinates(simplified, grid_size=1.0)
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed.append(new_region)
-    
-    # Find duplicate paths
-    path_groups = deduplicate_paths(processed)
-    
-    # Separate unique paths from duplicates
-    unique_paths = []
-    duplicate_groups = {}
-    symbol_id = 0
-    
-    for sig, group in path_groups.items():
-        if len(group) > 1:
-            # Multiple regions share this path
-            sid = _short_id(symbol_id)
-            symbol_id += 1
-            duplicate_groups[sid] = {
-                'path': group[0].path,
-                'regions': group
-            }
-        else:
-            unique_paths.append(group[0])
-    
-    # Build SVG with symbols
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}">']
-    
-    # Define symbols
-    if duplicate_groups:
-        parts.append('<defs>')
-        for sid, data in duplicate_groups.items():
-            path_data = _bezier_to_svg_path_ultra(data['path'])
-            parts.append(f'<symbol id="{sid}" viewBox="0 0 {width} {height}"><path d="{path_data}"/></symbol>')
-        parts.append('</defs>')
-    
-    # Group by fill color
-    color_groups = {}
-    for region in unique_paths:
-        if region.fill_color is not None:
-            color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
-            if color not in color_groups:
-                color_groups[color] = []
-            color_groups[color].append(region)
-    
-    # Output unique paths
-    for color, group in color_groups.items():
-        if len(group) > 1:
-            parts.append(f'<g fill="{color}">')
-            for region in group:
-                path_data = _bezier_to_svg_path_ultra(region.path)
-                parts.append(f'<path d="{path_data}"/>')
-            parts.append('</g>')
-        else:
-            path_data = _bezier_to_svg_path_ultra(group[0].path)
-            parts.append(f'<path d="{path_data}" fill="{color}"/>')
-    
-    # Output uses of duplicate paths
-    for sid, data in duplicate_groups.items():
-        # Group by color
-        color_groups = {}
-        for region in data['regions']:
-            if region.fill_color is not None:
-                color = _color_to_hex_compact(_quantize_color(region.fill_color, 16))
-                if color not in color_groups:
-                    color_groups[color] = []
-                color_groups[color].append(region)
-        
-        for color, group in color_groups.items():
-            if len(group) > 1:
-                parts.append(f'<g fill="{color}">')
-                for _ in group:
-                    parts.append(f'<use href="#{sid}"/>')
-                parts.append('</g>')
-            else:
-                parts.append(f'<use href="#{sid}" fill="{color}"/>')
-    
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def quantize_coordinates(bezier_curves, grid_size: float = 0.5):
-    """Quantize coordinates to grid to improve compressibility.
-    
-    Rounds all coordinates to nearest grid point, which:
-    1. Reduces precision needed to represent coordinates
-    2. Makes values more repetitive (better gzip compression)
-    3. Can maintain visual quality if grid is fine enough
-    
-    Args:
-        bezier_curves: List of BezierCurve objects
-        grid_size: Size of quantization grid (default 0.5 pixels)
-        
-    Returns:
-        List of quantized BezierCurve objects
-    """
-    from vectorizer.types import BezierCurve, Point
-    
-    def quantize(val):
-        return round(val / grid_size) * grid_size
-    
-    quantized = []
-    for curve in bezier_curves:
-        q_curve = BezierCurve(
-            p0=Point(quantize(curve.p0.x), quantize(curve.p0.y)),
-            p1=Point(quantize(curve.p1.x), quantize(curve.p1.y)),
-            p2=Point(quantize(curve.p2.x), quantize(curve.p2.y)),
-            p3=Point(quantize(curve.p3.x), quantize(curve.p3.y))
-        )
-        quantized.append(q_curve)
-    
-    return quantized
-
-
-def optimize_precision_adaptive(bezier_curves, base_precision: int = 2):
-    """Adaptively optimize decimal precision for each coordinate.
-    
-    Uses lower precision for coordinates that are already close to integers.
-    
-    Returns:
-        Optimized path string
-    """
-    if not bezier_curves:
-        return ''
-    
-    # Collect all coordinate values
-    values = []
-    for curve in bezier_curves:
-        for point in [curve.p0, curve.p1, curve.p2, curve.p3]:
-            values.extend([point.x, point.y])
-    
-    # Analyze decimal parts to find optimal precision
-    # If most values are integers or half-integers, we can use lower precision
-    decimal_parts = [abs(v - round(v)) for v in values]
-    avg_decimal = sum(decimal_parts) / len(decimal_parts) if decimal_parts else 0
-    
-    # Adjust precision based on average decimal part
-    if avg_decimal < 0.05:
-        precision = 0  # Mostly integers
-    elif avg_decimal < 0.15:
-        precision = 1  # Mostly half-integers
-    else:
-        precision = base_precision
-    
-    return _bezier_to_svg_path(bezier_curves, precision=precision, use_relative=True)
-
-
-def generate_optimized_svg(regions, width, height, 
-                          quantization_grid: float = 0.5,
-                          simplify_tolerance: float = 0.5,
-                          base_precision: int = 2) -> str:
-    """Generate fully optimized SVG with all compression techniques applied.
-    
-    Applies:
-    1. Path simplification
-    2. Coordinate quantization  
-    3. Adaptive precision
-    4. Relative coordinates
-    5. Compact number formatting
-    6. Color grouping
-    7. Minified XML output
-    
-    Args:
-        regions: List of VectorRegion objects
-        width: SVG width
-        height: SVG height
-        quantization_grid: Grid size for coordinate quantization
-        simplify_tolerance: Tolerance for path simplification
-        base_precision: Base decimal precision
-        
-    Returns:
-        Optimized SVG string
-    """
-    from copy import deepcopy
-    
-    # Process regions
-    processed_regions = []
-    for region in regions:
-        if not region.path:
-            continue
-        
-        # Simplify curves
-        simplified = simplify_bezier_curves(region.path, tolerance=simplify_tolerance)
-        
-        # Quantize coordinates
-        quantized = quantize_coordinates(simplified, grid_size=quantization_grid)
-        
-        # Create new region with optimized path
-        new_region = deepcopy(region)
-        new_region.path = quantized
-        processed_regions.append(new_region)
-    
-    # Generate compact SVG
-    return _regions_to_svg_compact(processed_regions, width, height, base_precision)
+def _remove_whitespace(element):
+    """Remove whitespace-only text nodes from XML tree."""
+    if element.text and not element.text.strip():
+        element.text = None
+    if element.tail and not element.tail.strip():
+        element.tail = None
+    for child in element:
+        _remove_whitespace(child)

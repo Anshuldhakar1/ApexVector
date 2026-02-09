@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 from enum import Enum, auto
+from pathlib import Path
 import numpy as np
 
 
@@ -52,7 +53,9 @@ class Region:
     centroid: Optional[Tuple[float, float]] = None
     mean_color: Optional[np.ndarray] = None
     bbox: Optional[Tuple[int, int, int, int]] = None  # x, y, w, h
-    
+    kind: Optional[RegionKind] = None  # Classification result
+    gradient_coeffs: Optional[np.ndarray] = None  # For GRADIENT regions: shape (3, 3) coeffs
+
     def __post_init__(self):
         if self.centroid is None:
             coords = np.where(self.mask)
@@ -110,27 +113,33 @@ class AdaptiveConfig:
     slic_segments: int = 400
     slic_compactness: float = 20.0
     slic_sigma: float = 1.0
-    
+
     # Region merging
     merge_threshold_delta_e: float = 5.0
-    min_region_size: int = 100
-    
+    # min_region_size: int = 100
+    # min_region_size: int = 100
+    min_region_size: int = 25
+
     # Classification thresholds
     gradient_threshold: float = 0.3
     edge_density_threshold: float = 0.1
     detail_complexity_threshold: float = 0.5
-    
+
     # Strategy parameters
     max_bezier_error: float = 2.0
     max_mesh_triangles: int = 500
-    
+
     # Performance
     parallel_workers: int = -1  # -1 = auto
     use_gpu: bool = False
-    
+
     # Output
     precision: int = 2  # Decimal places for SVG coordinates
     simplify_tolerance: float = 0.8
+
+    # Debug output
+    save_stages: Optional[Path] = None  # If set, write stage images here
+    stage_dpi: int = 150  # Resolution for stage visualization outputs
 
 
 @dataclass

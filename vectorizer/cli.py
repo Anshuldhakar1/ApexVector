@@ -50,7 +50,22 @@ def create_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='Validate output quality'
     )
-    
+
+    parser.add_argument(
+        '--save-stages',
+        type=str,
+        default=None,
+        help='Directory to save pipeline stage debug images'
+    )
+
+    parser.add_argument(
+        '--preset',
+        type=str,
+        choices=['lossless', 'standard', 'compact', 'thumbnail'],
+        default='standard',
+        help='Optimization preset: lossless (archival), standard (balanced), compact (smaller), thumbnail (aggressive)'
+    )
+
     return parser
 
 
@@ -73,7 +88,13 @@ def main(args=None):
     
     # Create configuration
     config = AdaptiveConfig()
-    
+
+    # Handle save_stages if provided
+    if parsed_args.save_stages:
+        config.save_stages = Path(parsed_args.save_stages)
+        config.save_stages.mkdir(parents=True, exist_ok=True)
+        print(f"Debug stages will be saved to: {config.save_stages}")
+
     if parsed_args.speed:
         # Fast mode: fewer segments, looser tolerances
         config.slic_segments = 100
@@ -94,7 +115,10 @@ def main(args=None):
     # Create pipeline and process
     try:
         pipeline = UnifiedPipeline(config)
-        svg_string = pipeline.process(input_path, output_path)
+        
+        # Map preset to optimize parameter
+        optimize = parsed_args.preset if parsed_args.preset != 'lossless' else False
+        svg_string = pipeline.process(input_path, output_path, optimize=optimize)
         
         # Validate if requested
         if parsed_args.validate:
