@@ -42,3 +42,4 @@ Thumbs.db
 # Project specific
 .opencode/
 test_images/out/
+batch_process.py
