@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Union, Optional
 import time
+import logging
 
 from vectorizer.types import AdaptiveConfig, VectorizationError
 from vectorizer.raster_ingest import ingest, IngestResult
@@ -11,6 +12,12 @@ from vectorizer.strategies.router import vectorize_all_regions
 from vectorizer.topology_merger import merge_topology
 from vectorizer.svg_optimizer import regions_to_svg, get_svg_size
 from vectorizer.perceptual_loss import compute_ssim, mean_delta_e
+from vectorizer.debug_utils import (
+    create_color_audit_visualization,
+    create_missing_pixel_visualization
+)
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiedPipeline:
@@ -92,6 +99,32 @@ class UnifiedPipeline:
             output_path = Path(output_path)
             output_path.write_text(svg_string, encoding='utf-8')
             print(f"  Saved to: {output_path}")
+        
+        # Phase 5: Debug visualizations
+        if self.config.debug_regions:
+            print("\nGenerating debug visualizations...")
+            debug_dir = Path(self.config.debug_output_dir)
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Color audit visualization
+            color_viz_path = debug_dir / "color_audit.png"
+            color_viz = create_color_audit_visualization(
+                regions,
+                (ingest_result.height, ingest_result.width),
+                output_path=color_viz_path
+            )
+            if color_viz is not None:
+                print(f"  Color audit saved to {color_viz_path}")
+            
+            # Missing pixel visualization
+            missing_viz_path = debug_dir / "missing_pixels.png"
+            missing_viz = create_missing_pixel_visualization(
+                regions,
+                ingest_result.image_srgb,
+                output_path=missing_viz_path
+            )
+            if missing_viz is not None:
+                print(f"  Missing pixel visualization saved to {missing_viz_path}")
         
         elapsed = time.time() - start_time
         print(f"\nCompleted in {elapsed:.2f}s")

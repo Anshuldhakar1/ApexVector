@@ -51,6 +51,19 @@ def create_parser() -> argparse.ArgumentParser:
         help='Validate output quality'
     )
     
+    parser.add_argument(
+        '--debug-regions',
+        action='store_true',
+        help='Enable region debugging visualizations'
+    )
+    
+    parser.add_argument(
+        '--debug-output',
+        type=str,
+        default='debug_output',
+        help='Directory for debug output (default: debug_output)'
+    )
+    
     return parser
 
 
@@ -90,6 +103,10 @@ def main(args=None):
         # Default mode
         config.slic_segments = parsed_args.segments
         print("Mode: Balanced")
+    
+    # Configure debug options
+    config.debug_regions = parsed_args.debug_regions
+    config.debug_output_dir = parsed_args.debug_output
     
     # Create pipeline and process
     try:

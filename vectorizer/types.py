@@ -131,6 +131,10 @@ class AdaptiveConfig:
     # Output
     precision: int = 2  # Decimal places for SVG coordinates
     simplify_tolerance: float = 0.8
+    
+    # Debug options
+    debug_regions: bool = False
+    debug_output_dir: str = 'debug_output'
 
 
 @dataclass
