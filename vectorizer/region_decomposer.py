@@ -1,4 +1,5 @@
 """Region decomposition using SLIC segmentation."""
+import logging
 from typing import List, Tuple
 import numpy as np
 from skimage.segmentation import find_boundaries
@@ -6,6 +7,9 @@ from skimage.measure import find_contours
 
 from vectorizer.types import Region, AdaptiveConfig
 from vectorizer.compute_backend import slic_superpixels
+from vectorizer.debug_utils import audit_regions_at_extraction
+
+logger = logging.getLogger(__name__)
 
 
 def decompose(image: np.ndarray, config: AdaptiveConfig) -> List[Region]:
@@ -36,6 +40,9 @@ def decompose(image: np.ndarray, config: AdaptiveConfig) -> List[Region]:
     
     # Build neighbor relationships
     regions = _compute_neighbors(regions, segments)
+    
+    # Audit regions after extraction
+    audit_regions_at_extraction(regions, phase="after_decomposition")
     
     return regions
 
@@ -199,17 +206,29 @@ def _compute_neighbors(regions: List[Region], segments: np.ndarray) -> List[Regi
     return regions
 
 
-def extract_region_boundary(region: Region, image_shape: Tuple[int, int]) -> np.ndarray:
+def extract_region_boundary(
+    region: Region,
+    image_shape: Tuple[int, int],
+    region_idx: int = -1
+) -> np.ndarray:
     """
     Extract boundary contour for a region.
     
     Args:
         region: Region object
         image_shape: Shape of original image (H, W)
+        region_idx: Index of region for logging (optional)
         
     Returns:
         Array of boundary points (N, 2) in (x, y) format
     """
+    # Check for empty mask
+    if region.mask is None or not np.any(region.mask):
+        logger.warning(
+            f"Region {region_idx} (label={region.label}): Cannot extract boundary - empty mask"
+        )
+        return np.array([])
+    
     # Extract boundary using skimage
     boundaries = find_boundaries(region.mask, mode='thick')
     
@@ -217,10 +236,20 @@ def extract_region_boundary(region: Region, image_shape: Tuple[int, int]) -> np.
     contours = find_contours(boundaries, level=0.5)
     
     if not contours:
+        logger.warning(
+            f"Region {region_idx} (label={region.label}): No contours found, "
+            f"mask_area={np.sum(region.mask)}"
+        )
         return np.array([])
     
     # Return the longest contour
     longest_contour = max(contours, key=len)
+    
+    # Log successful extraction
+    logger.debug(
+        f"Region {region_idx} (label={region.label}): "
+        f"Extracted {len(longest_contour)} boundary points from {len(contours)} contours"
+    )
     
     # skimage find_contours returns (row, col) which is (y, x)
     # We need to swap to (x, y) for SVG coordinates

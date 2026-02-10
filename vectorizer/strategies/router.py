@@ -1,5 +1,6 @@
 """Strategy router for dispatching regions to appropriate vectorization strategies."""
-from typing import List, Callable
+import logging
+from typing import List, Callable, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
@@ -8,6 +9,9 @@ from vectorizer.strategies.flat import vectorize_flat
 from vectorizer.strategies.gradient import vectorize_gradient
 from vectorizer.strategies.edge import vectorize_edge
 from vectorizer.strategies.detail import vectorize_detail
+from vectorizer.debug_utils import audit_regions_at_svg
+
+logger = logging.getLogger(__name__)
 
 
 def vectorize_all_regions(
@@ -73,59 +77,72 @@ def vectorize_all_regions(
                     except Exception:
                         pass
     else:
-        # Sequential processing
-        for region in regions:
+        # Sequential processing with index tracking
+        for idx, region in enumerate(regions):
             try:
-                vector_region = _vectorize_single_region(region, image, config)
+                vector_region = _vectorize_single_region(region, image, config, region_idx=idx)
                 if vector_region:
                     vector_regions.append(vector_region)
             except Exception as e:
-                print(f"Error vectorizing region: {e}")
+                logger.warning(f"Error vectorizing region {idx}: {e}")
                 # Fallback to flat
                 try:
-                    vector_region = vectorize_flat(region, image, config.max_bezier_error)
+                    vector_region = vectorize_flat(region, image, config.max_bezier_error, region_idx=idx)
                     vector_regions.append(vector_region)
-                except Exception:
-                    pass
+                except Exception as fallback_e:
+                    logger.error(f"Fallback also failed for region {idx}: {fallback_e}")
+    
+    # Audit regions at SVG export stage
+    audit_stats = audit_regions_at_svg(regions, vector_regions, phase="vectorization")
+    
+    if audit_stats["dropped_regions"] > 0:
+        logger.error(
+            f"CRITICAL: {audit_stats['dropped_regions']} regions were dropped during vectorization!"
+        )
     
     return vector_regions
 
 
-def _vectorize_single_region(region: Region, image: np.ndarray, config: AdaptiveConfig) -> VectorRegion:
+def _vectorize_single_region(
+    region: Region,
+    image: np.ndarray,
+    config: AdaptiveConfig,
+    region_idx: int = -1
+) -> VectorRegion:
     """Vectorize a single region using appropriate strategy."""
     # Get region kind (fallback to FLAT if not set)
     kind = getattr(region, 'kind', RegionKind.FLAT)
     
     # Route to appropriate strategy
     if kind == RegionKind.FLAT:
-        return vectorize_flat(region, image, config.max_bezier_error)
+        return vectorize_flat(region, image, config.max_bezier_error, region_idx=region_idx)
     
     elif kind == RegionKind.GRADIENT:
         try:
             return vectorize_gradient(region, image, config.max_bezier_error)
         except Exception as e:
             # Fallback to flat if gradient fails
-            print(f"Gradient strategy failed for region {region.label}, falling back to flat: {e}")
-            return vectorize_flat(region, image, config.max_bezier_error)
+            logger.warning(f"Gradient strategy failed for region {region_idx}, falling back to flat: {e}")
+            return vectorize_flat(region, image, config.max_bezier_error, region_idx=region_idx)
     
     elif kind == RegionKind.EDGE:
         try:
             # Use tighter error for edges
             return vectorize_edge(region, image, config.max_bezier_error * 0.5)
         except Exception as e:
-            print(f"Edge strategy failed for region {region.label}, falling back to flat: {e}")
-            return vectorize_flat(region, image, config.max_bezier_error)
+            logger.warning(f"Edge strategy failed for region {region_idx}, falling back to flat: {e}")
+            return vectorize_flat(region, image, config.max_bezier_error, region_idx=region_idx)
     
     elif kind == RegionKind.DETAIL:
         try:
             return vectorize_detail(region, image, config.max_mesh_triangles, config.max_bezier_error)
         except Exception as e:
-            print(f"Detail strategy failed for region {region.label}, falling back to flat: {e}")
-            return vectorize_flat(region, image, config.max_bezier_error)
+            logger.warning(f"Detail strategy failed for region {region_idx}, falling back to flat: {e}")
+            return vectorize_flat(region, image, config.max_bezier_error, region_idx=region_idx)
     
     else:
         # Unknown kind - use flat as default
-        return vectorize_flat(region, image, config.max_bezier_error)
+        return vectorize_flat(region, image, config.max_bezier_error, region_idx=region_idx)
 
 
 def get_strategy_for_kind(kind: RegionKind) -> Callable:

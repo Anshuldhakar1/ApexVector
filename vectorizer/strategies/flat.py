@@ -1,13 +1,22 @@
 """Flat color region vectorization strategy."""
+import logging
 import numpy as np
 from typing import List
 
 from vectorizer.types import Region, VectorRegion, RegionKind, BezierCurve, Point
 from vectorizer.compute_backend import fit_bezier
 from vectorizer.region_decomposer import extract_region_boundary
+from vectorizer.debug_utils import log_boundary_extraction
+
+logger = logging.getLogger(__name__)
 
 
-def vectorize_flat(region: Region, image: np.ndarray, max_error: float = 2.0) -> VectorRegion:
+def vectorize_flat(
+    region: Region,
+    image: np.ndarray,
+    max_error: float = 2.0,
+    region_idx: int = -1
+) -> VectorRegion:
     """
     Vectorize a flat (uniform color) region.
     
@@ -15,6 +24,7 @@ def vectorize_flat(region: Region, image: np.ndarray, max_error: float = 2.0) ->
         region: Region to vectorize
         image: Original image
         max_error: Maximum bezier fitting error
+        region_idx: Index for logging
         
     Returns:
         VectorRegion with solid fill
@@ -23,14 +33,27 @@ def vectorize_flat(region: Region, image: np.ndarray, max_error: float = 2.0) ->
     fill_color = np.mean(image[region.mask], axis=0)
     
     # Extract and fit boundary
-    boundary = extract_region_boundary(region, image.shape[:2])
+    boundary = extract_region_boundary(region, image.shape[:2], region_idx=region_idx)
     
     if len(boundary) < 2:
+        logger.warning(
+            f"Region {region_idx} (label={region.label}): Boundary too short ({len(boundary)} points), "
+            f"using bbox fallback"
+        )
         # Fallback: create rectangular boundary from bbox
         boundary = _create_bbox_boundary(region)
     
     # Fit bezier curves to boundary
     bezier_curves = fit_bezier(boundary, max_error=max_error)
+    
+    # Log boundary extraction results
+    log_boundary_extraction(
+        region_idx=region_idx,
+        region_label=region.label,
+        input_points=len(boundary),
+        output_curves=len(bezier_curves),
+        success=len(bezier_curves) > 0
+    )
     
     # Ensure path is closed
     if bezier_curves and len(bezier_curves) > 0:
