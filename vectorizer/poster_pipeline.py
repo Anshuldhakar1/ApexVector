@@ -1,4 +1,4 @@
-"""Poster-style vectorization pipeline with color quantization."""
+"""Fixed poster-style vectorization pipeline with save stages."""
 from pathlib import Path
 from typing import Union, Optional, List, Tuple
 import time
@@ -13,9 +13,9 @@ from vectorizer.raster_ingest import ingest
 from vectorizer.svg_optimizer import regions_to_svg
 from vectorizer.boundary_smoother import (
     smooth_boundary_infallible,
-    extract_contours_subpixel,
-    simplify_bezier_curves
+    extract_contours_subpixel
 )
+from vectorizer.svg_to_png import svg_to_png
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +23,29 @@ logger = logging.getLogger(__name__)
 class PosterPipeline:
     """Poster-style vectorization with flat colors and smooth boundaries."""
     
-    def __init__(self, config: Optional[AdaptiveConfig] = None, num_colors: int = 12):
+    def __init__(
+        self,
+        config: Optional[AdaptiveConfig] = None,
+        num_colors: int = 12,
+        save_stages: bool = False,
+        stages_dir: Optional[Path] = None
+    ):
         """
         Initialize poster pipeline.
         
         Args:
             config: Configuration (uses defaults if None)
             num_colors: Number of colors for quantization (default: 12)
+            save_stages: Whether to save intermediate stage results
+            stages_dir: Directory to save stage results (default: ./stages)
         """
         self.config = config or AdaptiveConfig()
         self.num_colors = num_colors
+        self.save_stages = save_stages
+        self.stages_dir = stages_dir or Path('./stages')
+        
+        if self.save_stages:
+            self.stages_dir.mkdir(parents=True, exist_ok=True)
     
     def process(
         self,
@@ -50,26 +63,41 @@ class PosterPipeline:
             SVG string
         """
         start_time = time.time()
+        input_path = Path(input_path)
         
         # Step 1: Ingest image
-        print("Step 1/5: Ingesting image...")
+        print("Step 1/6: Ingesting image...")
         ingest_result = ingest(input_path)
+        print(f"  Image: {ingest_result.width}x{ingest_result.height}")
+        
+        if self.save_stages:
+            self._save_stage_image(
+                ingest_result.image_srgb,
+                "stage_01_original.png"
+            )
         
         # Step 2: Color quantization
-        print(f"Step 2/5: Quantizing to {self.num_colors} colors...")
+        print(f"Step 2/6: Quantizing to {self.num_colors} colors...")
         label_map, palette = quantize_colors(
             ingest_result.image_srgb,
             num_colors=self.num_colors
         )
         print(f"  Quantized to {len(palette)} colors")
         
+        if self.save_stages:
+            quantized_img = palette[label_map]
+            self._save_stage_image(quantized_img, "stage_02_quantized.png")
+        
         # Step 3: Extract regions from quantized image
-        print("Step 3/5: Extracting regions...")
+        print("Step 3/6: Extracting regions...")
         regions = extract_regions_from_quantized(label_map, palette)
         print(f"  Found {len(regions)} regions")
         
-        # Step 4: Vectorize regions with new boundary smoothing
-        print("Step 4/5: Vectorizing regions with smooth boundaries...")
+        if self.save_stages:
+            self._save_region_mask(regions, ingest_result.image_srgb.shape, "stage_03_regions.png")
+        
+        # Step 4: Vectorize regions with boundary smoothing
+        print("Step 4/6: Vectorizing regions with smooth boundaries...")
         vector_regions = vectorize_poster_regions(
             regions,
             smoothness_factor=self.config.boundary_smoothing_strength,
@@ -77,8 +105,11 @@ class PosterPipeline:
         )
         print(f"  Vectorized {len(vector_regions)} regions")
         
+        if len(vector_regions) == 0:
+            raise RuntimeError("No regions were successfully vectorized!")
+        
         # Step 5: Generate SVG with transparent background
-        print("Step 5/5: Generating SVG...")
+        print("Step 5/6: Generating SVG...")
         svg_string = regions_to_svg(
             vector_regions,
             ingest_result.width,
@@ -87,34 +118,79 @@ class PosterPipeline:
             config=self.config
         )
         
-        # Save if output path provided
+        # Save SVG
         if output_path:
             output_path = Path(output_path)
             output_path.write_text(svg_string, encoding='utf-8')
-            print(f"  Saved to: {output_path}")
+            print(f"  Saved SVG to: {output_path}")
+        
+        # Step 6: Convert to PNG
+        print("Step 6/6: Converting SVG to PNG...")
+        if output_path:
+            png_path = output_path.with_suffix('.png')
+        else:
+            png_path = input_path.with_suffix('.png')
+        
+        png_result = svg_to_png(
+            output_path or svg_string,
+            png_path,
+            width=ingest_result.width,
+            height=ingest_result.height
+        )
+        
+        if png_result:
+            print(f"  Saved PNG to: {png_result}")
+        else:
+            print("  Warning: PNG conversion failed")
         
         elapsed = time.time() - start_time
         print(f"\nCompleted in {elapsed:.2f}s")
         
         return svg_string
+    
+    def _save_stage_image(self, image: np.ndarray, filename: str):
+        """Save an intermediate stage image."""
+        try:
+            from PIL import Image
+            
+            # Ensure uint8 format
+            if image.max() <= 1.0:
+                image = (image * 255).astype(np.uint8)
+            else:
+                image = image.astype(np.uint8)
+            
+            output_path = self.stages_dir / filename
+            Image.fromarray(image).save(output_path)
+            print(f"  Saved stage: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save stage {filename}: {e}")
+    
+    def _save_region_mask(self, regions: List[Region], shape: tuple, filename: str):
+        """Save region mask visualization."""
+        try:
+            from PIL import Image
+            
+            mask_img = np.zeros((*shape[:2], 3), dtype=np.uint8)
+            
+            for region in regions:
+                if region.mean_color is not None:
+                    color = region.mean_color
+                    if color.max() <= 1.0:
+                        color = (color * 255).astype(np.uint8)
+                    mask_img[region.mask] = color
+            
+            output_path = self.stages_dir / filename
+            Image.fromarray(mask_img).save(output_path)
+            print(f"  Saved stage: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save stage {filename}: {e}")
 
 
 def quantize_colors(
     image: np.ndarray,
     num_colors: int = 12
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Quantize image colors using K-means in LAB space.
-    
-    Args:
-        image: Input image (H, W, 3) in sRGB [0-255] or [0-1]
-        num_colors: Number of colors to quantize to
-        
-    Returns:
-        Tuple of (label_map, palette)
-        - label_map: (H, W) array of color indices
-        - palette: (num_colors, 3) array of RGB colors in uint8
-    """
+    """Quantize image colors using K-means in LAB space."""
     # Ensure image is in [0, 1] range for skimage
     if image.max() > 1.0:
         image_float = image / 255.0
@@ -150,16 +226,7 @@ def extract_regions_from_quantized(
     label_map: np.ndarray,
     palette: np.ndarray
 ) -> List[Region]:
-    """
-    Extract connected regions from quantized label map.
-    
-    Args:
-        label_map: (H, W) array of color indices
-        palette: (num_colors, 3) array of RGB colors
-        
-    Returns:
-        List of Region objects
-    """
+    """Extract connected regions from quantized label map."""
     from scipy.ndimage import label
     
     regions = []
@@ -167,20 +234,19 @@ def extract_regions_from_quantized(
     
     # Process each color
     for color_idx in range(len(palette)):
-        # Create mask for this color
         color_mask = (label_map == color_idx)
         
         if not np.any(color_mask):
             continue
         
-        # Find connected components for this color
+        # Find connected components
         labeled_array, num_features = label(color_mask)
         
-        # Create a region for each connected component
+        # Create region for each component
         for feature_idx in range(1, num_features + 1):
             region_mask = (labeled_array == feature_idx)
             
-            # Skip very small regions (noise)
+            # Skip very small regions
             if np.sum(region_mask) < 10:
                 continue
             
@@ -199,78 +265,65 @@ def vectorize_poster_regions(
     smoothness_factor: float = 0.6,
     smoothing_passes: int = 3
 ) -> List[VectorRegion]:
-    """
-    Vectorize poster regions using infallible boundary smoothing.
-    
-    Args:
-        regions: List of regions
-        smoothness_factor: Boundary smoothing amount
-        smoothing_passes: Number of smoothing passes
-        
-    Returns:
-        List of VectorRegion objects
-    """
+    """Vectorize poster regions using infallible boundary smoothing."""
     vector_regions = []
     
     for idx, region in enumerate(regions):
-        # Extract contours (outer and holes)
-        outer_contours, hole_contours = extract_contours_subpixel(region.mask)
-        
-        if not outer_contours:
-            logger.warning(f"Region {idx}: No outer contours found")
+        try:
+            # Extract contours
+            outer_contours, hole_contours = extract_contours_subpixel(region.mask)
+            
+            if not outer_contours:
+                logger.warning(f"Region {idx}: No outer contours found")
+                continue
+            
+            # Use largest contour
+            longest_outer = max(outer_contours, key=len)
+            
+            if len(longest_outer) < 3:
+                logger.warning(f"Region {idx}: Contour too short ({len(longest_outer)} points)")
+                continue
+            
+            # Apply Chaikin smoothing (less aggressive than before)
+            smoothed_points = longest_outer.copy()
+            for _ in range(min(smoothing_passes, 2)):  # Max 2 passes to avoid over-smoothing
+                smoothed_points = chaikin_smooth(smoothed_points, iterations=1)
+            
+            # Smooth with infallible smoother
+            bezier_curves = smooth_boundary_infallible(
+                smoothed_points,
+                smoothness_factor=smoothness_factor,
+                min_points=3
+            )
+            
+            if not bezier_curves:
+                logger.warning(f"Region {idx}: Failed to create bezier curves")
+                continue
+            
+            if len(bezier_curves) < 2:
+                logger.warning(f"Region {idx}: Too few curves ({len(bezier_curves)})")
+                continue
+            
+            # Create vector region
+            vector_region = VectorRegion(
+                kind=RegionKind.FLAT,
+                path=bezier_curves,
+                fill_color=region.mean_color
+            )
+            
+            vector_regions.append(vector_region)
+            
+        except Exception as e:
+            logger.error(f"Region {idx}: Error during vectorization: {e}")
             continue
-        
-        # Use the largest outer contour
-        longest_outer = max(outer_contours, key=len)
-        
-        # Apply multiple passes of smoothing for better results
-        smoothed_points = longest_outer.copy()
-        for _ in range(smoothing_passes):
-            smoothed_points = chaikin_smooth(smoothed_points, iterations=2)
-        
-        # Smooth the boundary with infallible smoother
-        bezier_curves = smooth_boundary_infallible(
-            smoothed_points,
-            smoothness_factor=smoothness_factor,
-            min_points=3
-        )
-        
-        if not bezier_curves:
-            logger.warning(f"Region {idx}: Failed to create curves")
-            continue
-        
-        # Simplify bezier curves to reduce file size
-        simplified_curves = simplify_bezier_curves(bezier_curves, tolerance=1.5)
-        
-        logger.debug(
-            f"Region {idx}: {len(bezier_curves)} curves -> {len(simplified_curves)} simplified curves"
-        )
-        
-        # Create vector region
-        vector_region = VectorRegion(
-            kind=RegionKind.FLAT,
-            path=simplified_curves,
-            fill_color=region.mean_color
-        )
-        
-        vector_regions.append(vector_region)
     
-    logger.info(f"Poster vectorization: {len(regions)} regions -> {len(vector_regions)} vector regions")
+    logger.info(f"Poster vectorization: {len(regions)} input -> {len(vector_regions)} output")
     
     return vector_regions
 
 
-def chaikin_smooth(points: np.ndarray, iterations: int = 2) -> np.ndarray:
-    """
-    Apply Chaikin corner-cutting algorithm for smooth curves.
-    
-    Args:
-        points: Input points (N, 2)
-        iterations: Number of iterations
-        
-    Returns:
-        Smoothed points
-    """
+def chaikin_smooth(points: np.ndarray, iterations: int = 1) -> np.ndarray:
+    """Apply Chaikin corner-cutting algorithm for smooth curves."""
     if len(points) < 3:
         return points
     
@@ -287,7 +340,7 @@ def chaikin_smooth(points: np.ndarray, iterations: int = 2) -> np.ndarray:
             p0 = result[i]
             p1 = result[(i + 1) % n]
             
-            # Chaikin corner-cutting (creates C1 continuous curve)
+            # Chaikin corner-cutting
             q = 0.25 * p0 + 0.75 * p1
             r = 0.75 * p0 + 0.25 * p1
             
