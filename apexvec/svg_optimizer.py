@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import numpy as np
 
-from apexvec.types import VectorRegion, RegionKind, GradientType, AdaptiveConfig
+from apexvec.types import VectorRegion, RegionKind, AdaptiveConfig
 
 
 def regions_to_svg(
@@ -52,15 +52,7 @@ def regions_to_svg(
     else:
         logger.debug("Transparent background enabled - no background rect added")
     
-    # Create defs for gradients
-    defs = ET.SubElement(svg, 'defs')
-    
-    # Track gradient IDs
-    gradient_id = 0
-    
     # Sort regions by area (smallest first for proper layering)
-    # Smaller regions should be drawn first, larger regions on top
-    # This ensures details are visible and large areas fill properly
     def get_region_area(region):
         if not region.path:
             return 0
@@ -97,33 +89,13 @@ def regions_to_svg(
         # Create path element
         path_elem = ET.SubElement(svg, 'path')
         path_elem.set('d', path_data)
-        
-        # Set fill-rule to evenodd for proper hole handling
         path_elem.set('fill-rule', 'evenodd')
         
-        # Set fill based on region kind
-        if region.kind == RegionKind.FLAT and region.fill_color is not None:
+        # Set fill color
+        if region.fill_color is not None:
             color = _color_to_hex(region.fill_color)
             path_elem.set('fill', color)
-        
-        elif region.kind == RegionKind.GRADIENT and region.gradient_type is not None:
-            # Create gradient definition
-            grad_id = f'gradient_{gradient_id}'
-            gradient_id += 1
-            
-            _create_gradient_def(defs, region, grad_id)
-            path_elem.set('fill', f'url(#{grad_id})')
-        
-        elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
-            # For detail regions, use average color as fallback
-            if region.mesh_colors is not None and len(region.mesh_colors) > 0:
-                avg_color = np.mean(region.mesh_colors, axis=0)
-                path_elem.set('fill', _color_to_hex(avg_color))
-            else:
-                path_elem.set('fill', '#808080')
-        
         else:
-            # Default fill
             path_elem.set('fill', '#808080')
         
         # Set stroke to none (no outline)
@@ -196,47 +168,6 @@ def _color_to_hex(color: np.ndarray) -> str:
     rgb = rgb[:3]
     
     return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
-
-
-def _create_gradient_def(defs, region: VectorRegion, grad_id: str):
-    """Create gradient definition element."""
-    if region.gradient_type == GradientType.LINEAR:
-        grad = ET.SubElement(defs, 'linearGradient')
-        grad.set('id', grad_id)
-        
-        if region.gradient_start and region.gradient_end:
-            grad.set('x1', str(region.gradient_start.x))
-            grad.set('y1', str(region.gradient_start.y))
-            grad.set('x2', str(region.gradient_end.x))
-            grad.set('y2', str(region.gradient_end.y))
-        else:
-            # Default gradient direction (left to right)
-            grad.set('x1', '0%')
-            grad.set('y1', '0%')
-            grad.set('x2', '100%')
-            grad.set('y2', '0%')
-    
-    elif region.gradient_type == GradientType.RADIAL:
-        grad = ET.SubElement(defs, 'radialGradient')
-        grad.set('id', grad_id)
-        
-        if region.gradient_center:
-            grad.set('cx', str(region.gradient_center.x))
-            grad.set('cy', str(region.gradient_center.y))
-        
-        if region.gradient_radius:
-            grad.set('r', str(region.gradient_radius))
-    
-    else:
-        # Default to linear
-        grad = ET.SubElement(defs, 'linearGradient')
-        grad.set('id', grad_id)
-    
-    # Add color stops
-    for stop in region.gradient_stops:
-        stop_elem = ET.SubElement(grad, 'stop')
-        stop_elem.set('offset', f'{stop.offset * 100:.1f}%')
-        stop_elem.set('stop-color', _color_to_hex(stop.color))
 
 
 def optimize_svg(svg_string: str) -> str:

@@ -6,18 +6,8 @@ import numpy as np
 
 
 class RegionKind(Enum):
-    """Classification of region types for routing to appropriate strategy."""
+    """Classification of region types."""
     FLAT = auto()
-    GRADIENT = auto()
-    EDGE = auto()
-    DETAIL = auto()
-
-
-class GradientType(Enum):
-    """Types of gradients supported."""
-    LINEAR = auto()
-    RADIAL = auto()
-    MESH = auto()
 
 
 @dataclass
@@ -34,13 +24,6 @@ class BezierCurve:
     p1: Point  # Control point
     p2: Point  # Control point
     p3: Point
-
-
-@dataclass
-class ColorStop:
-    """Color stop for gradients."""
-    offset: float  # 0.0 to 1.0
-    color: np.ndarray  # RGB array
 
 
 @dataclass
@@ -76,53 +59,21 @@ class VectorRegion:
     kind: RegionKind
     path: List[BezierCurve] = field(default_factory=list)
     fill_color: Optional[np.ndarray] = None
-    gradient_type: Optional[GradientType] = None
-    gradient_stops: List[ColorStop] = field(default_factory=list)
-    gradient_start: Optional[Point] = None
-    gradient_end: Optional[Point] = None
-    gradient_center: Optional[Point] = None
-    gradient_radius: Optional[float] = None
-    mesh_triangles: Optional[np.ndarray] = None
-    mesh_colors: Optional[np.ndarray] = None
     
-    # Validation
     def validate(self) -> bool:
-        """Validate region has required fields for its kind."""
-        if self.kind == RegionKind.FLAT:
-            return self.fill_color is not None and len(self.path) > 0
-        elif self.kind == RegionKind.GRADIENT:
-            return (self.gradient_type is not None and 
-                    len(self.gradient_stops) > 0 and 
-                    len(self.path) > 0)
-        elif self.kind == RegionKind.EDGE:
-            return len(self.path) > 0
-        elif self.kind == RegionKind.DETAIL:
-            return (self.mesh_triangles is not None and 
-                    self.mesh_colors is not None and
-                    len(self.path) > 0)
-        return False
+        """Validate region has required fields."""
+        return self.fill_color is not None and len(self.path) > 0
 
 
 @dataclass
 class AdaptiveConfig:
     """Configuration for adaptive vectorization pipeline."""
-    # Segmentation
-    slic_segments: int = 400
-    slic_compactness: float = 20.0
-    slic_sigma: float = 1.0
-    
     # Region merging
     merge_threshold_delta_e: float = 5.0
     min_region_size: int = 100
     
-    # Classification thresholds
-    gradient_threshold: float = 0.3
-    edge_density_threshold: float = 0.1
-    detail_complexity_threshold: float = 0.5
-    
     # Strategy parameters
     max_bezier_error: float = 2.0
-    max_mesh_triangles: int = 500
     
     # Performance
     parallel_workers: int = -1  # -1 = auto
@@ -131,10 +82,6 @@ class AdaptiveConfig:
     # Output
     precision: int = 2  # Decimal places for SVG coordinates
     simplify_tolerance: float = 0.8
-    
-    # Debug options
-    debug_regions: bool = False
-    debug_output_dir: str = 'debug_output'
     
     # Display options
     transparent_background: bool = True
