@@ -4,6 +4,8 @@ from typing import List, Callable, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
+import numpy as np
+
 from vectorizer.types import Region, VectorRegion, RegionKind, AdaptiveConfig, VectorizationError
 from vectorizer.strategies.flat import vectorize_flat
 from vectorizer.strategies.gradient import vectorize_gradient
@@ -95,10 +97,24 @@ def vectorize_all_regions(
     # Audit regions at SVG export stage
     audit_stats = audit_regions_at_svg(regions, vector_regions, phase="vectorization")
     
+    # Phase 4.2: Assert no regions are dropped
     if audit_stats["dropped_regions"] > 0:
         logger.error(
             f"CRITICAL: {audit_stats['dropped_regions']} regions were dropped during vectorization!"
         )
+    
+    # Assert that output count equals input count (with possible exceptions for empty regions)
+    input_count = len([r for r in regions if r.mask is not None and np.any(r.mask)])
+    output_count = len(vector_regions)
+    
+    if output_count != input_count:
+        logger.error(
+            f"ASSERTION FAILED: Input regions with valid masks: {input_count}, "
+            f"Output vector regions: {output_count}. "
+            f"Difference: {input_count - output_count}"
+        )
+    else:
+        logger.info(f"Region count assertion passed: {input_count} regions in = {output_count} regions out")
     
     return vector_regions
 
