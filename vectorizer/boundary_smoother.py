@@ -226,19 +226,25 @@ def _spline_to_bezier(tck, num_segments: int = 10) -> List[BezierCurve]:
     
     # For each segment, approximate as cubic bezier
     for i in range(num_segments):
-        p0 = Point(x[i], y[i])
-        p3 = Point(x[i + 1], y[i + 1])
+        p0 = Point(float(x[i]), float(y[i]))
+        p3 = Point(float(x[i + 1]), float(y[i + 1]))
         
         # Estimate control points using tangent vectors
         # Evaluate derivatives at endpoints
-        dx, dy = splev([u_new[i], u_new[i + 1]], (t, c, k), der=1)
+        dx_vals, dy_vals = splev([u_new[i], u_new[i + 1]], (t, c, k), der=1)
+        
+        # Ensure we have scalar values
+        dx_start = float(dx_vals[0]) if hasattr(dx_vals, '__len__') else float(dx_vals)
+        dy_start = float(dy_vals[0]) if hasattr(dy_vals, '__len__') else float(dy_vals)
+        dx_end = float(dx_vals[1]) if hasattr(dx_vals, '__len__') else float(dx_vals)
+        dy_end = float(dy_vals[1]) if hasattr(dy_vals, '__len__') else float(dy_vals)
         
         # Scale factor for control points (1/3 for cubic bezier)
         dt = u_new[i + 1] - u_new[i]
         scale = dt / 3.0
         
-        p1 = Point(p0.x + scale * dx[0], p0.y + scale * dy[0])
-        p2 = Point(p3.x - scale * dx[1], p3.y - scale * dy[1])
+        p1 = Point(float(p0.x + scale * dx_start), float(p0.y + scale * dy_start))
+        p2 = Point(float(p3.x - scale * dx_end), float(p3.y - scale * dy_end))
         
         curves.append(BezierCurve(p0, p1, p2, p3))
     
@@ -301,20 +307,20 @@ def _create_minimal_boundary(points: np.ndarray) -> List[BezierCurve]:
     max_x, max_y = points.max(axis=0)
     
     # Create rectangular boundary
-    p0 = Point(min_x, min_y)
-    p1 = Point(max_x, min_y)
-    p2 = Point(max_x, max_y)
-    p3 = Point(min_x, max_y)
+    p0 = Point(float(min_x), float(min_y))
+    p1 = Point(float(max_x), float(min_y))
+    p2 = Point(float(max_x), float(max_y))
+    p3 = Point(float(min_x), float(max_y))
     
     curves = [
-        BezierCurve(p0, Point((2*p0.x+p1.x)/3, (2*p0.y+p1.y)/3), 
-                   Point((p0.x+2*p1.x)/3, (p0.y+2*p1.y)/3), p1),
-        BezierCurve(p1, Point((2*p1.x+p2.x)/3, (2*p1.y+p2.y)/3),
-                   Point((p1.x+2*p2.x)/3, (p1.y+2*p2.y)/3), p2),
-        BezierCurve(p2, Point((2*p2.x+p3.x)/3, (2*p2.y+p3.y)/3),
-                   Point((p2.x+2*p3.x)/3, (p2.y+2*p3.y)/3), p3),
-        BezierCurve(p3, Point((2*p3.x+p0.x)/3, (2*p3.y+p0.y)/3),
-                   Point((p3.x+2*p0.x)/3, (p3.y+2*p0.y)/3), p0),
+        BezierCurve(p0, Point(float((2*p0.x+p1.x)/3), float((2*p0.y+p1.y)/3)), 
+                   Point(float((p0.x+2*p1.x)/3), float((p0.y+2*p1.y)/3)), p1),
+        BezierCurve(p1, Point(float((2*p1.x+p2.x)/3), float((2*p1.y+p2.y)/3)),
+                   Point(float((p1.x+2*p2.x)/3), float((p1.y+2*p2.y)/3)), p2),
+        BezierCurve(p2, Point(float((2*p2.x+p3.x)/3), float((2*p2.y+p3.y)/3)),
+                   Point(float((p2.x+2*p3.x)/3), float((p2.y+2*p3.y)/3)), p3),
+        BezierCurve(p3, Point(float((2*p3.x+p0.x)/3), float((2*p3.y+p0.y)/3)),
+                   Point(float((p3.x+2*p0.x)/3), float((p3.y+2*p0.y)/3)), p0),
     ]
     
     return curves
@@ -323,16 +329,95 @@ def _create_minimal_boundary(points: np.ndarray) -> List[BezierCurve]:
 def extract_contours_subpixel(
     mask: np.ndarray,
     level: float = 0.5
-) -> List[np.ndarray]:
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
     Extract contours at sub-pixel precision using skimage.
+    
+    Detects outer boundaries and inner boundaries (holes) using winding order.
+    In skimage, contours with positive signed area are typically outer boundaries,
+    while those with negative signed area are holes.
     
     Args:
         mask: Binary mask
         level: Contour level (0.5 for boundary between True/False)
         
     Returns:
-        List of contour arrays, each (N, 2) in (row, col) format
+        Tuple of (outer_contours, hole_contours), each a list of (N, 2) arrays
+                  in (col, row) format (x, y coordinates)
     """
+    from skimage.measure import find_contours
+    
     contours = find_contours(mask, level=level)
-    return contours
+    
+    if not contours:
+        return [], []
+    
+    outer_contours = []
+    hole_contours = []
+    
+    for contour in contours:
+        if len(contour) < 3:
+            continue
+        
+        # Calculate signed area using shoelace formula
+        # Positive area = counter-clockwise = outer boundary
+        # Negative area = clockwise = hole
+        x = contour[:, 1]  # col = x
+        y = contour[:, 0]  # row = y
+        
+        signed_area = 0.5 * np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
+        
+        # Convert to (x, y) format for output
+        contour_xy = contour[:, [1, 0]]
+        
+        if signed_area > 0:
+            outer_contours.append(contour_xy)
+        else:
+            hole_contours.append(contour_xy)
+    
+    # If no outer contours found but we have contours, assume the longest is outer
+    if not outer_contours and contours:
+        longest_idx = max(range(len(contours)), key=lambda i: len(contours[i]))
+        outer_contours = [contours[longest_idx][:, [1, 0]]]
+        hole_contours = [c[:, [1, 0]] for i, c in enumerate(contours) if i != longest_idx]
+    
+    return outer_contours, hole_contours
+
+
+def smooth_region_with_holes(
+    mask: np.ndarray,
+    smoothness_factor: float = 0.5
+) -> Tuple[List[BezierCurve], List[List[BezierCurve]]]:
+    """
+    Smooth a region boundary including holes.
+    
+    Args:
+        mask: Binary mask of region
+        smoothness_factor: Controls smoothing amount
+        
+    Returns:
+        Tuple of (outer_curves, list_of_hole_curves)
+    """
+    outer_contours, hole_contours = extract_contours_subpixel(mask)
+    
+    # Smooth outer boundary
+    outer_curves = []
+    if outer_contours:
+        # Use the largest outer contour
+        longest_outer = max(outer_contours, key=len)
+        outer_curves = smooth_boundary_infallible(
+            longest_outer,
+            smoothness_factor=smoothness_factor
+        )
+    
+    # Smooth holes
+    hole_curves_list = []
+    for hole_contour in hole_contours:
+        hole_curves = smooth_boundary_infallible(
+            hole_contour,
+            smoothness_factor=smoothness_factor
+        )
+        if hole_curves:
+            hole_curves_list.append(hole_curves)
+    
+    return outer_curves, hole_curves_list
