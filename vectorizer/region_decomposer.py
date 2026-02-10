@@ -56,19 +56,48 @@ def _segments_to_regions(segments: np.ndarray, image: np.ndarray) -> List[Region
         # Create binary mask for this segment
         mask = (segments == label)
         
-        # Compute mean color
-        mean_color = np.mean(image[mask], axis=0)
+        # Compute mean color from image (input is linear RGB [0, 1])
+        mean_color_linear = np.mean(image[mask], axis=0)
+        
+        # Convert linear RGB to sRGB uint8 [0-255] for storage
+        # This is the canonical color format for regions
+        mean_color_srgb = _linear_to_srgb_uint8(mean_color_linear)
         
         # Create region
         region = Region(
             mask=mask,
             label=int(label),
-            mean_color=mean_color
+            mean_color=mean_color_srgb
         )
         
         regions.append(region)
     
     return regions
+
+
+def _linear_to_srgb_uint8(linear_rgb: np.ndarray) -> np.ndarray:
+    """
+    Convert linear RGB [0, 1] to sRGB uint8 [0, 255].
+    
+    Args:
+        linear_rgb: Linear RGB values in range [0, 1]
+        
+    Returns:
+        sRGB values as uint8 in range [0, 255]
+    """
+    # Apply gamma correction (linear to sRGB)
+    # sRGB gamma: https://en.wikipedia.org/wiki/SRGB
+    mask = linear_rgb > 0.0031308
+    srgb = np.where(
+        mask,
+        1.055 * (linear_rgb ** (1.0 / 2.4)) - 0.055,
+        12.92 * linear_rgb
+    )
+    
+    # Convert to uint8 with proper clipping
+    srgb_uint8 = (np.clip(srgb, 0, 1) * 255).astype(np.uint8)
+    
+    return srgb_uint8
 
 
 def _merge_small_regions(
@@ -172,8 +201,9 @@ def _merge_two_regions(region1: Region, region2: Region, image: np.ndarray):
             int(np.max(coords[0]) - np.min(coords[0]) + 1)
         )
     
-    # Recalculate mean color
-    region1.mean_color = np.mean(image[region1.mask], axis=0)
+    # Recalculate mean color (convert linear RGB to sRGB uint8)
+    mean_color_linear = np.mean(image[region1.mask], axis=0)
+    region1.mean_color = _linear_to_srgb_uint8(mean_color_linear)
     
     # Update label (use lower label)
     region1.label = min(region1.label, region2.label)

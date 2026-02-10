@@ -25,6 +25,9 @@ def regions_to_svg(
     Returns:
         SVG XML string
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # Create SVG root element
     svg = ET.Element('svg')
     svg.set('xmlns', 'http://www.w3.org/2000/svg')
@@ -38,10 +41,49 @@ def regions_to_svg(
     # Track gradient IDs
     gradient_id = 0
     
-    # Add regions
-    for region in regions:
+    # Sort regions by area (largest first) for proper painter's algorithm
+    # Compute approximate area from path bounding box
+    def get_region_area(region):
         if not region.path:
+            return 0
+        # Calculate bounding box area from path points
+        all_x = []
+        all_y = []
+        for curve in region.path:
+            all_x.extend([curve.p0.x, curve.p1.x, curve.p2.x, curve.p3.x])
+            all_y.extend([curve.p0.y, curve.p1.y, curve.p2.y, curve.p3.y])
+        if all_x and all_y:
+            width = max(all_x) - min(all_x)
+            height = max(all_y) - min(all_y)
+            return width * height
+        return 0
+    
+    sorted_regions = sorted(regions, key=get_region_area, reverse=True)
+    
+    # Find the region with largest area for background
+    if sorted_regions:
+        bg_region = sorted_regions[0]
+        if bg_region.fill_color is not None:
+            # Add background rect as first element
+            bg_rect = ET.SubElement(svg, 'rect')
+            bg_rect.set('x', '0')
+            bg_rect.set('y', '0')
+            bg_rect.set('width', str(width))
+            bg_rect.set('height', str(height))
+            bg_rect.set('fill', _color_to_hex(bg_region.fill_color))
+            logger.debug(f"Added background rect with color {_color_to_hex(bg_region.fill_color)}")
+    
+    # Add regions
+    regions_with_paths = 0
+    regions_without_paths = 0
+    
+    for region in sorted_regions:
+        if not region.path:
+            regions_without_paths += 1
+            logger.warning(f"Skipping region with empty path (kind={region.kind})")
             continue
+        
+        regions_with_paths += 1
         
         # Convert path to SVG path data
         path_data = _bezier_to_svg_path(region.path, precision)
@@ -70,8 +112,11 @@ def regions_to_svg(
             gradient_id += 1
             
             # Use average color as fallback
-            avg_color = np.mean(region.mesh_colors, axis=0)
-            path_elem.set('fill', _color_to_hex(avg_color))
+            if region.mesh_colors is not None and len(region.mesh_colors) > 0:
+                avg_color = np.mean(region.mesh_colors, axis=0)
+                path_elem.set('fill', _color_to_hex(avg_color))
+            else:
+                path_elem.set('fill', '#808080')
         
         else:
             # Default fill
@@ -79,6 +124,16 @@ def regions_to_svg(
         
         # Set stroke to none (no outline)
         path_elem.set('stroke', 'none')
+    
+    # Log region statistics
+    logger.info(
+        f"SVG generation: {regions_with_paths} regions with paths, "
+        f"{regions_without_paths} regions skipped (empty paths)"
+    )
+    
+    # Assert that we have the expected number of path elements
+    path_count = len([e for e in svg if e.tag == 'path'])
+    logger.info(f"SVG contains {path_count} path elements")
     
     # Convert to string
     svg_string = ET.tostring(svg, encoding='unicode')
@@ -120,16 +175,25 @@ def _bezier_to_svg_path(bezier_curves, precision: int = 2) -> str:
 
 
 def _color_to_hex(color: np.ndarray) -> str:
-    """Convert RGB color to hex string."""
-    # Ensure color is in [0, 1] range
-    if color.max() > 1.0:
-        color = color / 255.0
+    """
+    Convert RGB color to hex string.
     
-    # Clamp to [0, 1]
-    color = np.clip(color, 0, 1)
+    Expects color in sRGB uint8 format [0-255].
+    Handles both uint8 and float [0,1] inputs for compatibility.
+    """
+    if color is None or len(color) < 3:
+        return '#808080'  # Default gray
     
-    # Convert to 0-255
-    rgb = (color * 255).astype(int)
+    # Detect if color is in float [0, 1] or uint8 [0, 255] format
+    if color.max() <= 1.0:
+        # Float [0, 1] format - convert to uint8
+        rgb = (np.clip(color, 0, 1) * 255).astype(np.uint8)
+    else:
+        # Already in uint8 format
+        rgb = color.astype(np.uint8)
+    
+    # Ensure we have exactly 3 channels
+    rgb = rgb[:3]
     
     return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
 
