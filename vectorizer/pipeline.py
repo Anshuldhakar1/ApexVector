@@ -91,7 +91,8 @@ class UnifiedPipeline:
             vector_regions,
             ingest_result.width,
             ingest_result.height,
-            self.config.precision
+            self.config.precision,
+            config=self.config
         )
         
         # Save if output path provided

@@ -1,17 +1,18 @@
 """SVG generation and optimization."""
-from typing import List
+from typing import List, Optional
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import numpy as np
 
-from vectorizer.types import VectorRegion, RegionKind, GradientType
+from vectorizer.types import VectorRegion, RegionKind, GradientType, AdaptiveConfig
 
 
 def regions_to_svg(
     regions: List[VectorRegion],
     width: int,
     height: int,
-    precision: int = 2
+    precision: int = 2,
+    config: Optional[AdaptiveConfig] = None
 ) -> str:
     """
     Convert vectorized regions to SVG string.
@@ -21,12 +22,16 @@ def regions_to_svg(
         width: Image width
         height: Image height
         precision: Decimal places for coordinates
+        config: Optional configuration for display options
         
     Returns:
         SVG XML string
     """
     import logging
     logger = logging.getLogger(__name__)
+    
+    # Get display options from config or use defaults
+    transparent_bg = config.transparent_background if config else True
     
     # Create SVG root element
     svg = ET.Element('svg')
@@ -35,14 +40,27 @@ def regions_to_svg(
     svg.set('height', str(height))
     svg.set('viewBox', f'0 0 {width} {height}')
     
+    # Add transparent background if requested
+    if not transparent_bg:
+        bg_rect = ET.SubElement(svg, 'rect')
+        bg_rect.set('x', '0')
+        bg_rect.set('y', '0')
+        bg_rect.set('width', str(width))
+        bg_rect.set('height', str(height))
+        bg_rect.set('fill', '#ffffff')
+        logger.debug("Added white background")
+    else:
+        logger.debug("Transparent background enabled - no background rect added")
+    
     # Create defs for gradients
     defs = ET.SubElement(svg, 'defs')
     
     # Track gradient IDs
     gradient_id = 0
     
-    # Sort regions by area (largest first) for proper painter's algorithm
-    # Compute approximate area from path bounding box
+    # Sort regions by area (smallest first for proper layering)
+    # Smaller regions should be drawn first, larger regions on top
+    # This ensures details are visible and large areas fill properly
     def get_region_area(region):
         if not region.path:
             return 0
@@ -53,27 +71,15 @@ def regions_to_svg(
             all_x.extend([curve.p0.x, curve.p1.x, curve.p2.x, curve.p3.x])
             all_y.extend([curve.p0.y, curve.p1.y, curve.p2.y, curve.p3.y])
         if all_x and all_y:
-            width = max(all_x) - min(all_x)
-            height = max(all_y) - min(all_y)
-            return width * height
+            w = max(all_x) - min(all_x)
+            h = max(all_y) - min(all_y)
+            return w * h
         return 0
     
-    sorted_regions = sorted(regions, key=get_region_area, reverse=True)
+    # Sort by area (smallest first = draw first = on bottom)
+    sorted_regions = sorted(regions, key=get_region_area)
     
-    # Find the region with largest area for background
-    if sorted_regions:
-        bg_region = sorted_regions[0]
-        if bg_region.fill_color is not None:
-            # Add background rect as first element
-            bg_rect = ET.SubElement(svg, 'rect')
-            bg_rect.set('x', '0')
-            bg_rect.set('y', '0')
-            bg_rect.set('width', str(width))
-            bg_rect.set('height', str(height))
-            bg_rect.set('fill', _color_to_hex(bg_region.fill_color))
-            logger.debug(f"Added background rect with color {_color_to_hex(bg_region.fill_color)}")
-    
-    # Add regions
+    # Add regions (smaller/detailed regions first, larger regions on top)
     regions_with_paths = 0
     regions_without_paths = 0
     
@@ -92,6 +98,9 @@ def regions_to_svg(
         path_elem = ET.SubElement(svg, 'path')
         path_elem.set('d', path_data)
         
+        # Set fill-rule to evenodd for proper hole handling
+        path_elem.set('fill-rule', 'evenodd')
+        
         # Set fill based on region kind
         if region.kind == RegionKind.FLAT and region.fill_color is not None:
             color = _color_to_hex(region.fill_color)
@@ -106,12 +115,7 @@ def regions_to_svg(
             path_elem.set('fill', f'url(#{grad_id})')
         
         elif region.kind == RegionKind.DETAIL and region.mesh_triangles is not None:
-            # For detail regions, we need to create mesh gradient
-            # This is a simplified version - full implementation would be more complex
-            grad_id = f'mesh_{gradient_id}'
-            gradient_id += 1
-            
-            # Use average color as fallback
+            # For detail regions, use average color as fallback
             if region.mesh_colors is not None and len(region.mesh_colors) > 0:
                 avg_color = np.mean(region.mesh_colors, axis=0)
                 path_elem.set('fill', _color_to_hex(avg_color))
@@ -130,10 +134,6 @@ def regions_to_svg(
         f"SVG generation: {regions_with_paths} regions with paths, "
         f"{regions_without_paths} regions skipped (empty paths)"
     )
-    
-    # Assert that we have the expected number of path elements
-    path_count = len([e for e in svg if e.tag == 'path'])
-    logger.info(f"SVG contains {path_count} path elements")
     
     # Convert to string
     svg_string = ET.tostring(svg, encoding='unicode')

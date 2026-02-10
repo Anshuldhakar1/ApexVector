@@ -135,6 +135,11 @@ class AdaptiveConfig:
     # Debug options
     debug_regions: bool = False
     debug_output_dir: str = 'debug_output'
+    
+    # Display options
+    transparent_background: bool = True
+    boundary_smoothing_passes: int = 3
+    boundary_smoothing_strength: float = 0.6
 
 
 @dataclass
