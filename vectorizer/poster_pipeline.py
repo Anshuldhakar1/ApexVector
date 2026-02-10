@@ -11,7 +11,11 @@ from skimage.color import rgb2lab, lab2rgb
 from vectorizer.types import Region, VectorRegion, RegionKind, AdaptiveConfig
 from vectorizer.raster_ingest import ingest
 from vectorizer.svg_optimizer import regions_to_svg
-from vectorizer.boundary_smoother import smooth_boundary_infallible, extract_contours_subpixel
+from vectorizer.boundary_smoother import (
+    smooth_boundary_infallible,
+    extract_contours_subpixel,
+    simplify_bezier_curves
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,10 +239,17 @@ def vectorize_poster_regions(
             logger.warning(f"Region {idx}: Failed to create curves")
             continue
         
+        # Simplify bezier curves to reduce file size
+        simplified_curves = simplify_bezier_curves(bezier_curves, tolerance=1.5)
+        
+        logger.debug(
+            f"Region {idx}: {len(bezier_curves)} curves -> {len(simplified_curves)} simplified curves"
+        )
+        
         # Create vector region
         vector_region = VectorRegion(
             kind=RegionKind.FLAT,
-            path=bezier_curves,
+            path=simplified_curves,
             fill_color=region.mean_color
         )
         

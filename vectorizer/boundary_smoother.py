@@ -421,3 +421,194 @@ def smooth_region_with_holes(
             hole_curves_list.append(hole_curves)
     
     return outer_curves, hole_curves_list
+
+
+def simplify_bezier_curves(
+    curves: List[BezierCurve],
+    tolerance: float = 1.0,
+    min_angle_deg: float = 15.0
+) -> List[BezierCurve]:
+    """
+    Simplify a chain of Bezier curves by merging collinear segments.
+    
+    Args:
+        curves: List of BezierCurve objects forming a continuous path
+        tolerance: Maximum deviation threshold for simplification
+        min_angle_deg: Minimum angle change to keep a segment (in degrees)
+        
+    Returns:
+        Simplified list of BezierCurve objects
+    """
+    if len(curves) < 3:
+        return curves
+    
+    simplified = []
+    
+    # Calculate angles at each joint
+    angles = []
+    for i in range(len(curves) - 1):
+        p3_prev = curves[i].p3
+        p0_next = curves[i + 1].p0
+        
+        # Skip if points don't match (discontinuous path)
+        if not _points_equal(p3_prev, p0_next, tolerance):
+            angles.append(180.0)  # Large angle = don't simplify
+            continue
+        
+        # Calculate angle at joint using tangent vectors
+        v1 = (curves[i].p3.x - curves[i].p2.x, curves[i].p3.y - curves[i].p2.y)
+        v2 = (curves[i + 1].p1.x - curves[i + 1].p0.x, curves[i + 1].p1.y - curves[i + 1].p0.y)
+        
+        angle = _angle_between(v1, v2)
+        angles.append(angle)
+    
+    # First pass: remove very small segments (noise)
+    filtered_curves = []
+    for i, curve in enumerate(curves):
+        length = _bezier_length(curve)
+        if length < tolerance:
+            continue
+        filtered_curves.append(curve)
+    
+    if len(filtered_curves) < 3:
+        return filtered_curves
+    
+    # Second pass: merge collinear segments
+    merged = [filtered_curves[0]]
+    
+    for i in range(1, len(filtered_curves)):
+        current = filtered_curves[i]
+        previous = merged[-1]
+        
+        # Check if we can merge with previous
+        if _can_merge_curves(previous, current, tolerance, min_angle_deg):
+            # Merge by extending previous curve's control points
+            merged[-1] = _merge_two_curves(previous, current)
+        else:
+            merged.append(current)
+    
+    # Third pass: reduce degree of curves (convert cubic to quadratic if close)
+    final = []
+    for curve in merged:
+        # Check if control points are close to the line between endpoints
+        if _is_nearly_linear(curve, tolerance):
+            # Convert to quadratic-like representation
+            p1_linear = Point(
+                (curve.p0.x + 2 * curve.p1.x + curve.p3.x) / 4,
+                (curve.p0.y + 2 * curve.p1.y + curve.p3.y) / 4
+            )
+            p2_linear = Point(
+                (curve.p0.x + 2 * curve.p2.x + curve.p3.x) / 4,
+                (curve.p0.y + 2 * curve.p2.y + curve.p3.y) / 4
+            )
+            # Keep as cubic but with collinear control points
+            curve = BezierCurve(curve.p0, p1_linear, p2_linear, curve.p3)
+        final.append(curve)
+    
+    return final
+
+
+def _points_equal(p1: Point, p2: Point, tolerance: float) -> bool:
+    """Check if two points are equal within tolerance."""
+    return abs(p1.x - p2.x) < tolerance and abs(p1.y - p2.y) < tolerance
+
+
+def _angle_between(v1: tuple, v2: tuple) -> float:
+    """Calculate angle between two vectors in degrees."""
+    import math
+    
+    dot = v1[0] * v2[0] + v1[1] * v2[1]
+    mag1 = math.sqrt(v1[0]**2 + v1[1]**2)
+    mag2 = math.sqrt(v2[0]**2 + v2[1]**2)
+    
+    if mag1 < 1e-10 or mag2 < 1e-10:
+        return 180.0
+    
+    cos_angle = dot / (mag1 * mag2)
+    cos_angle = max(-1.0, min(1.0, cos_angle))
+    
+    return math.degrees(math.acos(cos_angle))
+
+
+def _bezier_length(curve: BezierCurve) -> float:
+    """Calculate approximate length of a Bezier curve."""
+    # Use chord length as approximation
+    dx = curve.p3.x - curve.p0.x
+    dy = curve.p3.y - curve.p0.y
+    return (dx**2 + dy**2) ** 0.5
+
+
+def _can_merge_curves(
+    curve1: BezierCurve,
+    curve2: BezierCurve,
+    tolerance: float,
+    min_angle_deg: float
+) -> bool:
+    """Check if two curves can be merged."""
+    # Check continuity at joint
+    if not _points_equal(curve1.p3, curve2.p0, tolerance):
+        return False
+    
+    # Calculate angle at joint
+    v1 = (curve1.p3.x - curve1.p2.x, curve1.p3.y - curve1.p2.y)
+    v2 = (curve2.p1.x - curve2.p0.x, curve2.p1.y - curve2.p0.y)
+    
+    angle = _angle_between(v1, v2)
+    
+    # Merge if angle is close to 180 (collinear)
+    return angle > (180 - min_angle_deg)
+
+
+def _merge_two_curves(curve1: BezierCurve, curve2: BezierCurve) -> BezierCurve:
+    """Merge two consecutive Bezier curves into one."""
+    # Calculate new control points using subdivision approximation
+    # This creates a curve that approximates both original curves
+    
+    # New p1: weighted average of curve1's p1 and the midpoint
+    p1_new = Point(
+        (curve1.p1.x + curve1.p3.x) / 2,
+        (curve1.p1.y + curve1.p3.y) / 2
+    )
+    
+    # New p2: weighted average of curve2's p2 and the midpoint
+    p2_new = Point(
+        (curve2.p2.x + curve2.p0.x) / 2,
+        (curve2.p2.y + curve2.p0.y) / 2
+    )
+    
+    return BezierCurve(curve1.p0, p1_new, p2_new, curve2.p3)
+
+
+def _is_nearly_linear(curve: BezierCurve, tolerance: float) -> bool:
+    """Check if a Bezier curve is nearly linear."""
+    # Check if control points lie near the line between endpoints
+    p0, p1, p2, p3 = curve.p0, curve.p1, curve.p2, curve.p3
+    
+    # Distance from p1 to line p0-p3
+    d1 = _point_line_distance(p1, p0, p3)
+    
+    # Distance from p2 to line p0-p3
+    d2 = _point_line_distance(p2, p0, p3)
+    
+    return d1 < tolerance and d2 < tolerance
+
+
+def _point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
+    """Calculate perpendicular distance from point to line."""
+    import math
+    
+    dx = line_end.x - line_start.x
+    dy = line_end.y - line_start.y
+    
+    if abs(dx) < 1e-10 and abs(dy) < 1e-10:
+        return math.sqrt((point.x - line_start.x)**2 + (point.y - line_start.y)**2)
+    
+    # Projection parameter
+    t = ((point.x - line_start.x) * dx + (point.y - line_start.y) * dy) / (dx**2 + dy**2)
+    t = max(0.0, min(1.0, t))
+    
+    # Closest point on line
+    closest_x = line_start.x + t * dx
+    closest_y = line_start.y + t * dy
+    
+    return math.sqrt((point.x - closest_x)**2 + (point.y - closest_y)**2)
