@@ -162,9 +162,15 @@ def main(args=None):
     if parsed_args.poster:
         # Poster-style mode
         print("Mode: Poster-style (flat colors, smooth boundaries)")
-        
+
         config = ApexConfig(n_colors=parsed_args.colors)
-        
+
+        # Handle save_stages if provided
+        if parsed_args.save_stages:
+            config.save_stages = Path(parsed_args.save_stages)
+            config.save_stages.mkdir(parents=True, exist_ok=True)
+            print(f"Debug stages will be saved to: {config.save_stages}")
+
         try:
             pipeline = PosterPipeline(config)
             svg_string = pipeline.process(input_path, output_path)

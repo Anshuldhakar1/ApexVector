@@ -120,10 +120,31 @@ This outputs:
 Save intermediate pipeline stages for debugging:
 
 ```bash
+# Standard pipeline (6 stages)
 python -m apexvec input.png -o output.svg --save-stages ./debug_output
+
+# Poster pipeline (6 stages)
+python -m apexvec input.png -o output.svg --poster --save-stages ./debug_output
 ```
 
-This saves visualization images for each pipeline stage.
+This saves visualization images for each pipeline stage:
+
+**Standard Pipeline Stages:**
+- `01_ingest.png` - Original input after EXIF correction
+- `02_regions.png` - SLIC segmentation with region boundaries
+- `03_classified.png` - Regions color-coded by type (flat/gradient/edge/detail)
+- `04_vectorized.png` - Vector paths overlaid on original
+- `05_merged.png` - Final merged topology with fills
+- `06_final.svg` - Generated SVG output
+- `06_comparison.png` - Side-by-side comparison with metrics (SSIM, ΔE, timing)
+
+**Poster Pipeline Stages:**
+- `01_ingest.png` - Original input image
+- `02_quantization.png` - Color-quantized image with palette strip
+- `03_regions.png` - Extracted regions with boundaries and count overlay
+- `04_boundaries.png` - Smoothed spline boundaries overlaid on image
+- `05_final.svg` - Generated SVG output
+- `06_comparison.png` - Side-by-side comparison with metrics (regions, file size, timing)
 
 ## Complete CLI Reference
 

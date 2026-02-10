@@ -167,9 +167,13 @@ class ApexConfig:
     min_region_area_ratio: float = 0.001
     spline_smoothness: float = 0.5
     max_regions: int = 20
-    
+
     # Output
     precision: int = 2
+
+    # Debug output (same interface as AdaptiveConfig)
+    save_stages: Optional[Path] = None  # If set, write stage images here
+    stage_dpi: int = 150  # Resolution for stage visualization outputs
 
 
 class VectorizationError(Exception):
