@@ -90,8 +90,19 @@ class PosterPipeline:
         
         # Step 3: Extract regions from quantized image
         print("Step 3/6: Extracting regions...")
-        regions = extract_regions_from_quantized(label_map, palette)
+        regions = extract_regions_from_quantized(
+            label_map, palette, 
+            min_region_size=self.config.min_region_size
+        )
         print(f"  Found {len(regions)} regions")
+        
+        # Merge small isolated regions to reduce artifacts
+        if len(regions) > 0:
+            regions = merge_small_regions(
+                regions, label_map, 
+                merge_threshold_size=self.config.min_region_size * 2
+            )
+            print(f"  After merging: {len(regions)} regions")
         
         if self.save_stages:
             self._save_region_mask(regions, ingest_result.image_srgb.shape, "stage_03_regions.png")
@@ -107,10 +118,13 @@ class PosterPipeline:
         else:
             smoothing_passes = self.config.boundary_smoothing_passes
         
-        # Use parallel processing for many regions
-        use_parallel = len(regions) > 50
+        # Use parallel processing for moderate batches only
+        # Large batches cause memory issues during serialization
+        use_parallel = 50 < len(regions) < 1000
         if use_parallel:
             print(f"  Using parallel processing for {len(regions)} regions...")
+        elif len(regions) >= 1000:
+            print(f"  Using sequential processing for {len(regions)} regions (too many for parallel)")
         
         vector_regions = vectorize_poster_regions(
             regions,
@@ -410,9 +424,10 @@ def quantize_colors(
 
 def extract_regions_from_quantized(
     label_map: np.ndarray,
-    palette: np.ndarray
+    palette: np.ndarray,
+    min_region_size: int = 100
 ) -> List[Region]:
-    """Extract connected regions from quantized label map."""
+    """Extract connected regions from quantized label map with size filtering."""
     from scipy.ndimage import label
     
     regions = []
@@ -432,8 +447,10 @@ def extract_regions_from_quantized(
         for feature_idx in range(1, num_features + 1):
             region_mask = (labeled_array == feature_idx)
             
-            # Skip very small regions
-            if np.sum(region_mask) < 10:
+            region_size = np.sum(region_mask)
+            
+            # Skip small regions (reduces artifacts)
+            if region_size < min_region_size:
                 continue
             
             region = Region(
@@ -444,6 +461,77 @@ def extract_regions_from_quantized(
             regions.append(region)
     
     return regions
+
+
+def merge_small_regions(
+    regions: List[Region],
+    label_map: np.ndarray,
+    merge_threshold_size: int = 200
+) -> List[Region]:
+    """
+    Merge small regions with their largest neighbor.
+    
+    This reduces artifacts by eliminating tiny isolated regions
+    and merging them into adjacent larger regions.
+    
+    Args:
+        regions: List of regions
+        label_map: Original label map
+        merge_threshold_size: Regions smaller than this get merged
+        
+    Returns:
+        Filtered and merged list of regions
+    """
+    if not regions:
+        return regions
+    
+    # Build spatial index for finding neighbors
+    h, w = label_map.shape
+    region_ids = np.full((h, w), -1, dtype=np.int32)
+    
+    for i, region in enumerate(regions):
+        region_ids[region.mask] = i
+    
+    # Find small regions to merge
+    merged = set()
+    new_regions = []
+    
+    for i, region in enumerate(regions):
+        if i in merged:
+            continue
+        
+        region_size = np.sum(region.mask)
+        
+        if region_size >= merge_threshold_size:
+            new_regions.append(region)
+            continue
+        
+        # Find neighboring regions
+        # Dilate mask slightly to find neighbors
+        from scipy.ndimage import binary_dilation
+        dilated = binary_dilation(region.mask, iterations=1)
+        neighbor_mask = dilated & ~region.mask
+        
+        neighbor_ids = np.unique(region_ids[neighbor_mask])
+        neighbor_ids = neighbor_ids[neighbor_ids >= 0]
+        
+        if len(neighbor_ids) == 0:
+            # Isolated small region - keep it
+            new_regions.append(region)
+            continue
+        
+        # Find largest neighbor
+        largest_neighbor = max(
+            neighbor_ids,
+            key=lambda nid: np.sum(regions[nid].mask) if nid not in merged else 0
+        )
+        
+        # Merge into largest neighbor
+        if largest_neighbor not in merged:
+            regions[largest_neighbor].mask = regions[largest_neighbor].mask | region.mask
+            merged.add(i)
+    
+    return new_regions
 
 
 def _vectorize_single_region(
