@@ -30,6 +30,27 @@ python -m apexvec photo.jpg --colors 20
 python -m apexvec photo.jpg --colors 24
 ```
 
+## Debug Mode
+
+Save intermediate pipeline stages for debugging:
+
+```bash
+# Save all pipeline stages
+python -m apexvec photo.jpg --save-stages
+
+# Custom stages directory
+python -m apexvec photo.jpg --save-stages --stages-dir ./debug_output
+```
+
+**Stages saved:**
+- `stage_01_original.png` - Original input image
+- `stage_02_quantized.png` - Color quantized version
+- `stage_03_regions.png` - Region mask visualization  
+- `stage_04_vectorized.png` - Rasterized vector preview
+- `stage_04_stats.txt` - Region statistics and size distribution
+- `stage_05_svg.svg` - Intermediate SVG output
+- `stage_06_timing.txt` - Performance timing report
+
 ## Showcase
 
 ### Example 1: Portrait Photo
