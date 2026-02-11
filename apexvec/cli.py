@@ -6,6 +6,7 @@ from pathlib import Path
 from apexvec.pipeline import UnifiedPipeline
 from apexvec.poster_pipeline import PosterPipeline
 from apexvec.poster_first_pipeline import PosterFirstPipeline
+from apexvec.slic_pipeline import SlicPipeline
 from apexvec.types import AdaptiveConfig, ApexConfig
 
 
@@ -75,6 +76,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        '--slic',
+        action='store_true',
+        help='SLIC-based poster pipeline - better spatial coherence'
+    )
+
+    parser.add_argument(
         '--colors',
         type=int,
         default=12,
@@ -110,6 +117,37 @@ def main(args=None):
         config.save_stages.mkdir(parents=True, exist_ok=True)
         print(f"Debug stages will be saved to: {config.save_stages}")
 
+    if parsed_args.slic:
+        # SLIC-based poster pipeline
+        print("Mode: SLIC-based poster pipeline (spatial + color quantization)")
+        
+        config = ApexConfig(n_colors=parsed_args.colors)
+        
+        try:
+            pipeline = SlicPipeline(config)
+            svg_string = pipeline.process(
+                input_path,
+                output_path,
+                debug_stages=parsed_args.save_stages
+            )
+            
+            if parsed_args.validate:
+                print("\nValidating output...")
+                validation = pipeline._stage7_validate()
+                
+                print(f"\nValidation Results:")
+                print(f"  Coverage: {validation['coverage']:.1f}%")
+                print(f"  Gap pixels: {validation['gap_pixels']}")
+                print(f"  Status: {'PASS' if validation['gap_pixels'] == 0 else 'WARN'}")
+            
+            return 0
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return 1
+    
     if parsed_args.poster:
         # Poster-style mode with shared boundaries
         print("Mode: Poster-style with shared boundaries (flat colors, gap-free)")
@@ -117,7 +155,7 @@ def main(args=None):
         config = ApexConfig(n_colors=parsed_args.colors)
         
         try:
-            # Use new PosterFirstPipeline with shared boundaries
+            # Use PosterFirstPipeline with shared boundaries
             pipeline = PosterFirstPipeline(config)
             svg_string = pipeline.process(
                 input_path,
@@ -125,10 +163,8 @@ def main(args=None):
                 debug_stages=parsed_args.save_stages
             )
             
-            # Validate if requested
             if parsed_args.validate:
                 print("\nValidating output...")
-                # Run validation stage
                 validation = pipeline._stage7_validate()
                 
                 print(f"\nValidation Results:")

@@ -3,6 +3,8 @@ from typing import List, Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
+import numpy as np
+
 from apexvec.types import Region, VectorRegion, RegionKind, AdaptiveConfig, VectorizationError
 from apexvec.strategies.flat import vectorize_flat
 from apexvec.strategies.gradient import vectorize_gradient
