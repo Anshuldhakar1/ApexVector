@@ -1,2 +1,2 @@
-Current Phase: Setting up
+Current Phase: Phase 2 - Synthetic Gap Test
 Status: IN_PROGRESS
