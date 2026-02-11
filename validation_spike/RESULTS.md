@@ -72,5 +72,37 @@ This establishes the baseline behavior. The current pipeline:
 ### Conclusion
 Shared-boundary smoothing is theoretically sound. The approach of smoothing once and sharing between adjacent regions works without creating overlaps, as long as sigma doesn't cause boundary self-intersections.
 
-**Next**: Phase 3 - Real image topology check
+---
+
+## Phase 3: Topology Check
+**Status**: WARNING (High Fragmentation)
+
+### Results
+
+| Colors | Speckle % | Frag Score | Total Components | Status |
+|--------|-----------|------------|------------------|--------|
+| 12     | 7.05%     | 742.75x    | 8,913            | WARN   |
+| 24     | 9.83%     | 543.29x    | 13,039           | WARN   |
+
+### Key Findings
+1. **Extreme fragmentation**: Each color label has 500-1400 connected components
+2. **High speckle count**: 7-10% of pixels are in tiny (<10px) islands
+3. **Total components**: 8,913 (12 colors) to 13,039 (24 colors)
+4. **Boundary sanity**: All boundary pixels are valid (separate 2+ labels)
+
+### Root Cause
+K-means quantization without spatial regularization creates:
+- Salt-and-pepper noise patterns
+- Many tiny disconnected regions
+- Highly complex topology unsuitable for shared-boundary tracing
+
+### Implications for Shared Boundaries
+- Tracing 8K-13K boundaries will be slow
+- Small regions may drop out during smoothing
+- Need either:
+  1. Pre-processing: spatial regularization in quantization
+  2. Post-processing: merge tiny components before boundary extraction
+  3. Alternative segmentation: SLIC superpixels + merging
+
+**Next**: Phase 4 - Test shared boundary extraction despite fragmentation
 
