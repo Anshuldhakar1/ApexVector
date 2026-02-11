@@ -1,0 +1,44 @@
+{
+  "gaussian": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 0.2578938298802093,
+    "avg_preservation": 33.55450001899044,
+    "avg_reduction": 0.994059405940594
+  },
+  "moving_average": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 0.5756846017505255,
+    "avg_preservation": 26.28791617216016,
+    "avg_reduction": 0.994059405940594
+  },
+  "savgol": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 0.5670552107216512,
+    "avg_preservation": 28.683008354110058,
+    "avg_reduction": 0.994059405940594
+  },
+  "cubic_spline": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 0.9202743579294357,
+    "avg_preservation": 3.59680062390575,
+    "avg_reduction": 1.0
+  },
+  "bspline": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 0.7159740838478547,
+    "avg_preservation": 48.233850541594244,
+    "avg_reduction": 1.0
+  },
+  "douglas_peucker": {
+    "success_count": 5,
+    "fail_count": 0,
+    "avg_smoothness": 1.8259076139382422,
+    "avg_preservation": 22.346644190781355,
+    "avg_reduction": 3.718991718991719
+  }
+}

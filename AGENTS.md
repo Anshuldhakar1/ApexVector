@@ -1,103 +1,43 @@
-# ApexVector - Agent Guidelines
+## agents.md
 
-## Project Overview
-Python image vectorization: raster → optimized SVG via adaptive region classification.
+### Objective
+Validate whether **shared boundaries + Gaussian smoothing** can produce gap-free, flat-color SVGs from `./img0.jpg` in the `apexvector` repository, without rewriting the main pipeline.
 
-This is a windows environment.
+### Operating Mode
+You are running a validation spike. Prefer measurement and falsification over feature building.
 
-## Commands
+### Musts
+- Use git frequently; commit after every phase and every meaningful test result.
+- Keep changes isolated under `validation_spike/` unless a tiny hook is unavoidable.
+- Record every command executed and every numeric result in `validation_spike/RESULTS.md`.
+- Keep outputs deterministic where possible (fixed RNG seeds for quantization).
 
-```bash
-# Setup
-pip install -r requirements.txt
+### Must Nots
+- Do not refactor the production pipeline as part of the spike.
+- Do not “fix” issues by adding a background rectangle; background must remain transparent unless explicitly required by test.
+- Do not introduce gradients; all fills must be solid colors.
 
-# Test
-pytest -x                    # All tests
-pytest -v -x path/to/test.py # Verbose, single file
+### Pass/Fail Criteria
+A phase is PASS only if the documented numeric criteria are met (gap pixels, coverage %, dropout counts). Visual-only judgment is not sufficient.
 
-# Run
-python -m vectorizer input.png -o output.svg
-python -m vectorizer input.png -o output.svg --speed    # Fast mode
-python -m vectorizer input.png -o output.svg --quality  # Quality mode
-```
+### Debugging Guidance
+If a test fails:
+1. Identify which invariant failed (gap, dropout, coverage, topology).
+2. Add a small diagnostic artifact (e.g., missing-pixel overlay) under `validation_spike/artifacts/`.
+3. Re-run only the relevant phase first.
+4. Only then re-run the full chain.
 
-## Code Style
+### Git Practices (Strict)
+- Work on a fresh branch named `spike/validate-shared-boundaries-<name>-<yyyymmdd>`.
+- No force pushes.
+- Commit messages must include the phase and result, e.g.:
+  - `spike: phase4 coverage 92% FAIL`
+  - `spike: phase5 gaps 0.03% PASS`
 
-| Element | Convention | Example |
-|---------|-----------|---------|
-| Variables | `snake_case` | `region_count` |
-| Functions | `snake_case` | `process_image()` |
-| Classes | `PascalCase` | `VectorRegion` |
-| Constants | `UPPER_SNAKE_CASE` | `MAX_REGIONS` |
-| Private | `_leading_underscore` | `_internal_method` |
+### Inputs
+- `./img0.jpg` at repo root (provided by user)
 
-### Imports (order)
-```python
-import os                    # stdlib
-import numpy as np           # third-party
-from vectorizer.types import Region  # local
-```
-
-### Type Hints
-```python
-from dataclasses import dataclass
-from typing import Optional
-
-@dataclass
-class Region:
-    mask: np.ndarray
-    color: Optional[np.ndarray] = None
-
-def process(path: Path) -> str: ...
-```
-
-### Error Handling
-```python
-class VectorizationError(Exception): pass
-
-def process(path: Path):
-    if not path.exists():
-        raise FileNotFoundError(f"Not found: {path}")
-    try:
-        ...
-    except (IOError, OSError) as e:
-        raise VectorizationError(f"Failed: {e}")
-```
-
-### Performance
-- NumPy vectorization > Python loops
-- Pre-allocate known-size arrays
-- Profile before optimizing
-
-## Branch: feature/curvature-preserving
-
-**Active Development**: Clothoid-based G² curve synthesis for curvature-preserving vectorization.
-
-**Goal**: Replace standard Bézier fitting with clothoid-based curves that preserve curvature magnitude and variation.
-
-**Key Modules** (see tasks.md for full spec):
-- `curvature_estimator.py` - Tangent/curvature field computation
-- `clothoid_fitter.py` - Piecewise clothoid fitting using Fresnel integrals
-- `g2_converter.py` - Clothoid to G² Bézier conversion
-- `curvature_optimizer.py` - Differentiable refinement
-
-## Architecture
-
-- **Color space**: Linear RGB internally, sRGB for output
-- **Parallel**: `ProcessPoolExecutor` with worker-local backends
-- **Memory**: Release large arrays, use memory views for slices
-
-## Validation
-
-Per module:
-```bash
-pytest -x && echo "✓ Tests pass"
-```
-
-Final:
-| Metric | Threshold |
-|--------|-----------|
-| SSIM | > 0.75 |
-| Mean ΔE | < 15 |
-| SVG size | < input |
-| Speed (512×512) | < 10s |
+### Outputs
+- `validation_spike/RESULTS.md`
+- `validation_spike/artifacts/*`
+- Phase scripts under `validation_spike/tests/`

@@ -1,0 +1,9 @@
+Pipeline Timing Report
+=====================
+Total time: 33.17 seconds
+
+Metadata:
+  Image size: 662x532
+  Colors: 24
+  Regions found: 2105
+  Regions vectorized: 2105

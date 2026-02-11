@@ -1,0 +1,217 @@
+"""SVG generation and optimization."""
+from typing import List, Optional
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+import numpy as np
+
+from apexvec.types import VectorRegion, RegionKind, AdaptiveConfig
+
+
+def regions_to_svg(
+    regions: List[VectorRegion],
+    width: int,
+    height: int,
+    precision: int = 2,
+    config: Optional[AdaptiveConfig] = None
+) -> str:
+    """
+    Convert vectorized regions to SVG string.
+    
+    Args:
+        regions: List of vectorized regions
+        width: Image width
+        height: Image height
+        precision: Decimal places for coordinates
+        config: Optional configuration for display options
+        
+    Returns:
+        SVG XML string
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Get display options from config or use defaults
+    transparent_bg = config.transparent_background if config else True
+    
+    # Create SVG root element
+    svg = ET.Element('svg')
+    svg.set('xmlns', 'http://www.w3.org/2000/svg')
+    svg.set('width', str(width))
+    svg.set('height', str(height))
+    svg.set('viewBox', f'0 0 {width} {height}')
+    
+    # Add transparent background if requested
+    if not transparent_bg:
+        bg_rect = ET.SubElement(svg, 'rect')
+        bg_rect.set('x', '0')
+        bg_rect.set('y', '0')
+        bg_rect.set('width', str(width))
+        bg_rect.set('height', str(height))
+        bg_rect.set('fill', '#ffffff')
+        logger.debug("Added white background")
+    else:
+        logger.debug("Transparent background enabled - no background rect added")
+    
+    # Sort regions by area (largest first for proper layering)
+    def get_region_area(region):
+        if not region.path:
+            return 0
+        # Calculate bounding box area from path points
+        all_x = []
+        all_y = []
+        for curve in region.path:
+            all_x.extend([curve.p0.x, curve.p1.x, curve.p2.x, curve.p3.x])
+            all_y.extend([curve.p0.y, curve.p1.y, curve.p2.y, curve.p3.y])
+        if all_x and all_y:
+            w = max(all_x) - min(all_x)
+            h = max(all_y) - min(all_y)
+            return w * h
+        return 0
+    
+    # Sort by area (largest first = draw first = on bottom, smallest last = on top)
+    sorted_regions = sorted(regions, key=get_region_area, reverse=True)
+    
+    # Add regions (smaller/detailed regions first, larger regions on top)
+    regions_with_paths = 0
+    regions_without_paths = 0
+    
+    for region in sorted_regions:
+        if not region.path:
+            regions_without_paths += 1
+            logger.warning(f"Skipping region with empty path (kind={region.kind})")
+            continue
+        
+        regions_with_paths += 1
+        
+        # Convert outer path to SVG path data
+        path_data = _bezier_to_svg_path(region.path, precision)
+        
+        # Append hole paths to create compound path
+        # Holes must have opposite winding direction from outer path for evenodd to work
+        for hole_path in region.hole_paths:
+            if hole_path:
+                hole_data = _bezier_to_svg_path(hole_path, precision)
+                # Combine: remove 'Z' from outer, keep hole as-is
+                path_data = path_data.rstrip(' Z') + ' ' + hole_data
+        
+        # Create path element
+        path_elem = ET.SubElement(svg, 'path')
+        path_elem.set('d', path_data)
+        path_elem.set('fill-rule', 'evenodd')  # Critical for holes to work!
+        
+        # Set fill color
+        if region.fill_color is not None:
+            color = _color_to_hex(region.fill_color)
+            path_elem.set('fill', color)
+        else:
+            path_elem.set('fill', '#808080')
+        
+        # Set stroke to none (no outline)
+        path_elem.set('stroke', 'none')
+    
+    # Log region statistics
+    logger.info(
+        f"SVG generation: {regions_with_paths} regions with paths, "
+        f"{regions_without_paths} regions skipped (empty paths)"
+    )
+    
+    # Convert to string
+    svg_string = ET.tostring(svg, encoding='unicode')
+    
+    # Pretty print
+    dom = minidom.parseString(svg_string)
+    pretty_xml = dom.toprettyxml(indent='  ')
+    
+    # Remove extra blank lines
+    lines = [line for line in pretty_xml.split('\n') if line.strip()]
+    
+    return '\n'.join(lines)
+
+
+def _bezier_to_svg_path(bezier_curves, precision: int = 2) -> str:
+    """Convert bezier curves to SVG path data string."""
+    if not bezier_curves:
+        return ''
+    
+    fmt = f'{{:.{precision}f}}'
+    
+    # Start at first point
+    p0 = bezier_curves[0].p0
+    path_data = f'M {fmt.format(p0.x)} {fmt.format(p0.y)}'
+    
+    # Add each curve
+    for curve in bezier_curves:
+        # Cubic bezier: C x1 y1, x2 y2, x y
+        path_data += (
+            f' C {fmt.format(curve.p1.x)} {fmt.format(curve.p1.y)},'
+            f' {fmt.format(curve.p2.x)} {fmt.format(curve.p2.y)},'
+            f' {fmt.format(curve.p3.x)} {fmt.format(curve.p3.y)}'
+        )
+    
+    # Close path
+    path_data += ' Z'
+    
+    return path_data
+
+
+def _color_to_hex(color: np.ndarray) -> str:
+    """
+    Convert RGB color to hex string.
+    
+    Expects color in sRGB uint8 format [0-255].
+    Handles both uint8 and float [0,1] inputs for compatibility.
+    """
+    if color is None or len(color) < 3:
+        return '#808080'  # Default gray
+    
+    # Detect if color is in float [0, 1] or uint8 [0, 255] format
+    if color.max() <= 1.0:
+        # Float [0, 1] format - convert to uint8
+        rgb = (np.clip(color, 0, 1) * 255).astype(np.uint8)
+    else:
+        # Already in uint8 format
+        rgb = color.astype(np.uint8)
+    
+    # Ensure we have exactly 3 channels
+    rgb = rgb[:3]
+    
+    return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
+
+
+def optimize_svg(svg_string: str) -> str:
+    """
+    Optimize SVG by removing unnecessary precision and whitespace.
+    
+    Args:
+        svg_string: Input SVG string
+        
+    Returns:
+        Optimized SVG string
+    """
+    # Parse SVG
+    root = ET.fromstring(svg_string)
+    
+    # Remove whitespace text nodes
+    _remove_whitespace(root)
+    
+    # Convert back to string
+    svg_string = ET.tostring(root, encoding='unicode')
+    
+    return svg_string
+
+
+def _remove_whitespace(element):
+    """Remove whitespace-only text nodes from XML tree."""
+    if element.text and not element.text.strip():
+        element.text = None
+    
+    if element.tail and not element.tail.strip():
+        element.tail = None
+    
+    for child in element:
+        _remove_whitespace(child)
+
+
+def get_svg_size(svg_string: str) -> int:
+    """Get size of SVG in bytes."""
+    return len(svg_string.encode('utf-8'))

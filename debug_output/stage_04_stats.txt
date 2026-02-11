@@ -1,0 +1,22 @@
+Region Statistics
+=================
+Total regions: 2105
+Regions with holes: 168
+
+Size Distribution:
+  Min: 1.4 pixels
+  Max: 112396.9 pixels
+  Mean: 294.0 pixels
+  Median: 29.6 pixels
+
+Top 10 Largest Regions:
+  1. Region 1527: 112396.9 px, 30 holes, RGB(255, 254, 255)
+  2. Region 1863: 65490.0 px, 25 holes, RGB(238, 23, 24)
+  3. Region 1347: 43829.9 px, 82 holes, RGB(0, 0, 0)
+  4. Region 1392: 25599.0 px, 25 holes, RGB(0, 0, 0)
+  5. Region 1859: 25001.8 px, 8 holes, RGB(238, 23, 24)
+  6. Region 1390: 22540.0 px, 30 holes, RGB(0, 0, 0)
+  7. Region 1480: 22045.2 px, 12 holes, RGB(255, 254, 255)
+  8. Region 287: 22037.6 px, 0 holes, RGB(251, 224, 95)
+  9. Region 1493: 16644.9 px, 16 holes, RGB(255, 254, 255)
+  10. Region 1868: 14131.6 px, 2 holes, RGB(238, 23, 24)
