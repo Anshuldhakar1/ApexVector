@@ -33,6 +33,19 @@ def create_parser() -> argparse.ArgumentParser:
         help='Number of colors (default: 24)'
     )
     
+    parser.add_argument(
+        '--save-stages',
+        action='store_true',
+        help='Save intermediate stage results for debugging'
+    )
+    
+    parser.add_argument(
+        '--stages-dir',
+        type=str,
+        default='./stages',
+        help='Directory to save stage results (default: ./stages)'
+    )
+    
     return parser
 
 
@@ -65,7 +78,9 @@ def main(args=None):
         
         pipeline = PosterPipeline(
             config=config,
-            num_colors=parsed_args.colors
+            num_colors=parsed_args.colors,
+            save_stages=parsed_args.save_stages,
+            stages_dir=Path(parsed_args.stages_dir) if parsed_args.save_stages else None
         )
         svg_string = pipeline.process(input_path, output_path)
         

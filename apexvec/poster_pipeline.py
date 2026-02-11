@@ -3,9 +3,9 @@ from pathlib import Path
 from typing import Union, Optional, List, Tuple
 import time
 import logging
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
-from sklearn.cluster import KMeans
 from skimage.color import rgb2lab, lab2rgb
 
 from apexvec.types import Region, VectorRegion, RegionKind, AdaptiveConfig
@@ -98,15 +98,34 @@ class PosterPipeline:
         
         # Step 4: Vectorize regions with boundary smoothing
         print("Step 4/6: Vectorizing regions with smooth boundaries...")
+        
+        # Adaptive smoothing: reduce passes for large images
+        total_pixels = ingest_result.width * ingest_result.height
+        if total_pixels > 1000000:  # >1MP
+            smoothing_passes = 1
+            print(f"  Large image detected ({total_pixels:,} px), reducing smoothing to {smoothing_passes} pass")
+        else:
+            smoothing_passes = self.config.boundary_smoothing_passes
+        
+        # Use parallel processing for many regions
+        use_parallel = len(regions) > 50
+        if use_parallel:
+            print(f"  Using parallel processing for {len(regions)} regions...")
+        
         vector_regions = vectorize_poster_regions(
             regions,
             smoothness_factor=self.config.boundary_smoothing_strength,
-            smoothing_passes=self.config.boundary_smoothing_passes
+            smoothing_passes=smoothing_passes,
+            parallel=use_parallel
         )
         print(f"  Vectorized {len(vector_regions)} regions")
         
         if len(vector_regions) == 0:
             raise RuntimeError("No regions were successfully vectorized!")
+        
+        if self.save_stages:
+            self._save_vector_regions_preview(vector_regions, ingest_result.image_srgb.shape, "stage_04_vectorized.png")
+            self._save_region_statistics(vector_regions, "stage_04_stats.txt")
         
         # Step 5: Generate SVG with transparent background
         print("Step 5/6: Generating SVG...")
@@ -123,6 +142,12 @@ class PosterPipeline:
             output_path = Path(output_path)
             output_path.write_text(svg_string, encoding='utf-8')
             print(f"  Saved SVG to: {output_path}")
+        
+        if self.save_stages:
+            # Save intermediate SVG
+            intermediate_svg = self.stages_dir / "stage_05_svg.svg"
+            intermediate_svg.write_text(svg_string, encoding='utf-8')
+            print(f"  Saved stage: {intermediate_svg}")
         
         # Step 6: Convert to PNG
         print("Step 6/6: Converting SVG to PNG...")
@@ -145,6 +170,14 @@ class PosterPipeline:
         
         elapsed = time.time() - start_time
         print(f"\nCompleted in {elapsed:.2f}s")
+        
+        if self.save_stages:
+            self._save_timing_report(start_time, {
+                "Image size": f"{ingest_result.width}x{ingest_result.height}",
+                "Colors": self.num_colors,
+                "Regions found": len(regions),
+                "Regions vectorized": len(vector_regions)
+            }, "stage_06_timing.txt")
         
         return svg_string
     
@@ -184,13 +217,141 @@ class PosterPipeline:
             print(f"  Saved stage: {output_path}")
         except Exception as e:
             logger.warning(f"Failed to save stage {filename}: {e}")
+    
+    def _save_vector_regions_preview(self, vector_regions: List[VectorRegion], shape: tuple, filename: str):
+        """Save a rasterized preview of vectorized regions."""
+        try:
+            from PIL import Image, ImageDraw
+            
+            # Create blank image
+            h, w = shape[:2]
+            img = Image.new('RGB', (w, h), (255, 255, 255))
+            draw = ImageDraw.Draw(img)
+            
+            # Draw each vector region
+            for vr in vector_regions:
+                if not vr.path:
+                    continue
+                
+                # Get fill color
+                color = vr.fill_color
+                if color is not None:
+                    if color.max() <= 1.0:
+                        color = tuple((color * 255).astype(np.uint8))
+                    else:
+                        color = tuple(color.astype(np.uint8))
+                else:
+                    color = (128, 128, 128)
+                
+                # Convert bezier curves to polygon points
+                points = []
+                for curve in vr.path:
+                    if not points:
+                        points.append((curve.p0.x, curve.p0.y))
+                    points.append((curve.p3.x, curve.p3.y))
+                
+                if len(points) >= 3:
+                    draw.polygon(points, fill=color)
+            
+            output_path = self.stages_dir / filename
+            img.save(output_path)
+            print(f"  Saved stage: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save stage {filename}: {e}")
+    
+    def _save_region_statistics(self, vector_regions: List[VectorRegion], filename: str):
+        """Save region statistics to a text file."""
+        try:
+            output_path = self.stages_dir / filename
+            
+            # Calculate statistics
+            total_regions = len(vector_regions)
+            regions_with_holes = sum(1 for vr in vector_regions if vr.hole_paths)
+            
+            # Size distribution
+            sizes = []
+            for vr in vector_regions:
+                if vr.path:
+                    # Calculate area from path bounds
+                    xs = [c.p0.x for c in vr.path] + [c.p3.x for c in vr.path]
+                    ys = [c.p0.y for c in vr.path] + [c.p3.y for c in vr.path]
+                    if xs and ys:
+                        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                        sizes.append(area)
+            
+            stats = [
+                "Region Statistics",
+                "=================",
+                f"Total regions: {total_regions}",
+                f"Regions with holes: {regions_with_holes}",
+                f"",
+                "Size Distribution:",
+                f"  Min: {min(sizes) if sizes else 0:.1f} pixels",
+                f"  Max: {max(sizes) if sizes else 0:.1f} pixels",
+                f"  Mean: {sum(sizes)/len(sizes) if sizes else 0:.1f} pixels",
+                f"  Median: {sorted(sizes)[len(sizes)//2] if sizes else 0:.1f} pixels",
+                f"",
+                "Top 10 Largest Regions:",
+            ]
+            
+            # Sort by size and show top 10
+            region_info = []
+            for i, vr in enumerate(vector_regions):
+                if vr.path:
+                    xs = [c.p0.x for c in vr.path] + [c.p3.x for c in vr.path]
+                    ys = [c.p0.y for c in vr.path] + [c.p3.y for c in vr.path]
+                    if xs and ys:
+                        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                        num_holes = len(vr.hole_paths)
+                        color = vr.fill_color
+                        if color is not None:
+                            color_str = f"RGB({int(color[0])}, {int(color[1])}, {int(color[2])})"
+                        else:
+                            color_str = "Unknown"
+                        region_info.append((i, area, num_holes, color_str))
+            
+            region_info.sort(key=lambda x: x[1], reverse=True)
+            for i, (idx, area, holes, color) in enumerate(region_info[:10]):
+                stats.append(f"  {i+1}. Region {idx}: {area:.1f} px, {holes} holes, {color}")
+            
+            output_path.write_text('\n'.join(stats), encoding='utf-8')
+            print(f"  Saved stats: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save stats {filename}: {e}")
+    
+    def _save_timing_report(self, start_time: float, metadata: dict, filename: str):
+        """Save timing and metadata report."""
+        try:
+            import time
+            output_path = self.stages_dir / filename
+            
+            elapsed = time.time() - start_time
+            
+            report = [
+                "Pipeline Timing Report",
+                "=====================",
+                f"Total time: {elapsed:.2f} seconds",
+                f"",
+                "Metadata:",
+            ]
+            
+            for key, value in metadata.items():
+                report.append(f"  {key}: {value}")
+            
+            output_path.write_text('\n'.join(report), encoding='utf-8')
+            print(f"  Saved timing: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save timing {filename}: {e}")
 
 
 def quantize_colors(
     image: np.ndarray,
-    num_colors: int = 12
+    num_colors: int = 12,
+    max_samples: int = 500000
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Quantize image colors using K-means in LAB space."""
+    """Quantize image colors using K-means in LAB space with sampling for large images."""
+    from sklearn.cluster import MiniBatchKMeans
+    
     # Ensure image is in [0, 1] range for skimage
     if image.max() > 1.0:
         image_float = image / 255.0
@@ -204,9 +365,31 @@ def quantize_colors(
     h, w = image_lab.shape[:2]
     pixels_lab = image_lab.reshape(-1, 3)
     
-    # Run K-means clustering
-    kmeans = KMeans(n_clusters=num_colors, random_state=42, n_init=10)
-    labels = kmeans.fit_predict(pixels_lab)
+    # Sample pixels for large images to speed up clustering
+    n_pixels = len(pixels_lab)
+    if n_pixels > max_samples:
+        # Random sampling
+        rng = np.random.RandomState(42)
+        indices = rng.choice(n_pixels, max_samples, replace=False)
+        sample_pixels = pixels_lab[indices]
+        use_sampling = True
+    else:
+        sample_pixels = pixels_lab
+        use_sampling = False
+    
+    # Use MiniBatchKMeans for speed
+    logger.info(f"Clustering {len(sample_pixels):,} pixels into {num_colors} colors...")
+    kmeans = MiniBatchKMeans(
+        n_clusters=num_colors,
+        random_state=42,
+        n_init=3,
+        batch_size=10000,
+        max_iter=100
+    )
+    kmeans.fit(sample_pixels)
+    
+    # Predict labels for all pixels
+    labels = kmeans.predict(pixels_lab)
     
     # Reshape labels back to image shape
     label_map = labels.reshape(h, w)
@@ -218,6 +401,9 @@ def quantize_colors(
     
     # Convert to uint8
     palette = (np.clip(palette_rgb, 0, 1) * 255).astype(np.uint8)
+    
+    if use_sampling:
+        logger.info(f"Used {max_samples:,} samples from {n_pixels:,} total pixels")
     
     return label_map, palette
 
@@ -260,62 +446,115 @@ def extract_regions_from_quantized(
     return regions
 
 
-def vectorize_poster_regions(
-    regions: List[Region],
-    smoothness_factor: float = 0.6,
-    smoothing_passes: int = 3
-) -> List[VectorRegion]:
-    """Vectorize poster regions using infallible boundary smoothing."""
-    vector_regions = []
+def _vectorize_single_region(
+    region_data: Tuple[int, Region, float, int]
+) -> Optional[VectorRegion]:
+    """Vectorize a single region - helper for parallel processing."""
+    idx, region, smoothness_factor, smoothing_passes = region_data
     
-    for idx, region in enumerate(regions):
-        try:
-            # Extract contours
-            outer_contours, hole_contours = extract_contours_subpixel(region.mask)
-            
-            if not outer_contours:
-                logger.warning(f"Region {idx}: No outer contours found")
+    try:
+        # Extract contours (both outer and holes)
+        outer_contours, hole_contours = extract_contours_subpixel(region.mask)
+        
+        if not outer_contours:
+            return None
+        
+        # Use largest outer contour
+        longest_outer = max(outer_contours, key=len)
+        
+        if len(longest_outer) < 3:
+            return None
+        
+        # Apply Chaikin smoothing to outer contour
+        smoothed_points = longest_outer.copy()
+        for _ in range(min(smoothing_passes, 2)):
+            smoothed_points = chaikin_smooth(smoothed_points, iterations=1)
+        
+        # Smooth outer boundary with infallible smoother
+        outer_bezier = smooth_boundary_infallible(
+            smoothed_points,
+            smoothness_factor=smoothness_factor,
+            min_points=3
+        )
+        
+        if not outer_bezier or len(outer_bezier) < 2:
+            return None
+        
+        # Process hole contours
+        hole_paths = []
+        for hole in hole_contours:
+            if len(hole) < 3:
                 continue
             
-            # Use largest contour
-            longest_outer = max(outer_contours, key=len)
+            # Smooth hole contour (less smoothing for holes)
+            smoothed_hole = hole.copy()
+            for _ in range(min(smoothing_passes, 1)):  # Only 1 pass for holes
+                smoothed_hole = chaikin_smooth(smoothed_hole, iterations=1)
             
-            if len(longest_outer) < 3:
-                logger.warning(f"Region {idx}: Contour too short ({len(longest_outer)} points)")
-                continue
-            
-            # Apply Chaikin smoothing (less aggressive than before)
-            smoothed_points = longest_outer.copy()
-            for _ in range(min(smoothing_passes, 2)):  # Max 2 passes to avoid over-smoothing
-                smoothed_points = chaikin_smooth(smoothed_points, iterations=1)
-            
-            # Smooth with infallible smoother
-            bezier_curves = smooth_boundary_infallible(
-                smoothed_points,
-                smoothness_factor=smoothness_factor,
+            # Smooth hole boundary
+            hole_bezier = smooth_boundary_infallible(
+                smoothed_hole,
+                smoothness_factor=smoothness_factor * 0.8,
                 min_points=3
             )
             
-            if not bezier_curves:
-                logger.warning(f"Region {idx}: Failed to create bezier curves")
-                continue
-            
-            if len(bezier_curves) < 2:
-                logger.warning(f"Region {idx}: Too few curves ({len(bezier_curves)})")
-                continue
-            
-            # Create vector region
-            vector_region = VectorRegion(
-                kind=RegionKind.FLAT,
-                path=bezier_curves,
-                fill_color=region.mean_color
-            )
-            
-            vector_regions.append(vector_region)
-            
-        except Exception as e:
-            logger.error(f"Region {idx}: Error during vectorization: {e}")
-            continue
+            if hole_bezier and len(hole_bezier) >= 2:
+                hole_paths.append(hole_bezier)
+        
+        # Create vector region with holes
+        return VectorRegion(
+            kind=RegionKind.FLAT,
+            path=outer_bezier,
+            hole_paths=hole_paths,
+            fill_color=region.mean_color
+        )
+        
+    except Exception as e:
+        logger.error(f"Region {idx}: Error during vectorization: {e}")
+        return None
+
+
+def vectorize_poster_regions(
+    regions: List[Region],
+    smoothness_factor: float = 0.6,
+    smoothing_passes: int = 3,
+    parallel: bool = True,
+    max_workers: Optional[int] = None
+) -> List[VectorRegion]:
+    """Vectorize poster regions using infallible boundary smoothing, including holes.
+    
+    Args:
+        regions: List of regions to vectorize
+        smoothness_factor: Smoothing strength for boundaries
+        smoothing_passes: Number of smoothing iterations
+        parallel: Whether to use parallel processing
+        max_workers: Maximum number of parallel workers (None = auto)
+    """
+    import os
+    
+    # Prepare region data for processing
+    region_data = [
+        (idx, region, smoothness_factor, smoothing_passes)
+        for idx, region in enumerate(regions)
+    ]
+    
+    vector_regions = []
+    
+    if parallel and len(regions) > 10:
+        # Use parallel processing for many regions
+        workers = max_workers or min(os.cpu_count() or 4, 8)
+        logger.info(f"Vectorizing {len(regions)} regions using {workers} workers...")
+        
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_vectorize_single_region, region_data))
+        
+        vector_regions = [vr for vr in results if vr is not None]
+    else:
+        # Sequential processing for small batches
+        for data in region_data:
+            result = _vectorize_single_region(data)
+            if result is not None:
+                vector_regions.append(result)
     
     logger.info(f"Poster vectorization: {len(regions)} input -> {len(vector_regions)} output")
     

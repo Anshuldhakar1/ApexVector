@@ -57,7 +57,8 @@ class Region:
 class VectorRegion:
     """Vectorized output region."""
     kind: RegionKind
-    path: List[BezierCurve] = field(default_factory=list)
+    path: List[BezierCurve] = field(default_factory=list)  # Outer boundary
+    hole_paths: List[List[BezierCurve]] = field(default_factory=list)  # Holes
     fill_color: Optional[np.ndarray] = None
     
     def validate(self) -> bool:

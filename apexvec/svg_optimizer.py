@@ -52,7 +52,7 @@ def regions_to_svg(
     else:
         logger.debug("Transparent background enabled - no background rect added")
     
-    # Sort regions by area (smallest first for proper layering)
+    # Sort regions by area (largest first for proper layering)
     def get_region_area(region):
         if not region.path:
             return 0
@@ -68,8 +68,8 @@ def regions_to_svg(
             return w * h
         return 0
     
-    # Sort by area (smallest first = draw first = on bottom)
-    sorted_regions = sorted(regions, key=get_region_area)
+    # Sort by area (largest first = draw first = on bottom, smallest last = on top)
+    sorted_regions = sorted(regions, key=get_region_area, reverse=True)
     
     # Add regions (smaller/detailed regions first, larger regions on top)
     regions_with_paths = 0
@@ -83,13 +83,21 @@ def regions_to_svg(
         
         regions_with_paths += 1
         
-        # Convert path to SVG path data
+        # Convert outer path to SVG path data
         path_data = _bezier_to_svg_path(region.path, precision)
+        
+        # Append hole paths to create compound path
+        # Holes must have opposite winding direction from outer path for evenodd to work
+        for hole_path in region.hole_paths:
+            if hole_path:
+                hole_data = _bezier_to_svg_path(hole_path, precision)
+                # Combine: remove 'Z' from outer, keep hole as-is
+                path_data = path_data.rstrip(' Z') + ' ' + hole_data
         
         # Create path element
         path_elem = ET.SubElement(svg, 'path')
         path_elem.set('d', path_data)
-        path_elem.set('fill-rule', 'evenodd')
+        path_elem.set('fill-rule', 'evenodd')  # Critical for holes to work!
         
         # Set fill color
         if region.fill_color is not None:
