@@ -7,6 +7,7 @@ from apexvec.pipeline import UnifiedPipeline
 from apexvec.poster_pipeline import PosterPipeline
 from apexvec.poster_first_pipeline import PosterFirstPipeline
 from apexvec.slic_pipeline import SlicPipeline
+from apexvec.poster_edge_pipeline import EdgeAwarePosterPipeline
 from apexvec.types import AdaptiveConfig, ApexConfig
 
 
@@ -82,6 +83,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        '--edge-poster',
+        action='store_true',
+        help='Edge-aware poster pipeline - preserves details like toes/claws'
+    )
+
+    parser.add_argument(
         '--colors',
         type=int,
         default=12,
@@ -117,6 +124,37 @@ def main(args=None):
         config.save_stages.mkdir(parents=True, exist_ok=True)
         print(f"Debug stages will be saved to: {config.save_stages}")
 
+    if parsed_args.edge_poster:
+        # Edge-aware poster pipeline with detail preservation
+        print("Mode: Edge-aware poster pipeline (preserves details)")
+        
+        config = ApexConfig(n_colors=parsed_args.colors)
+        
+        try:
+            pipeline = EdgeAwarePosterPipeline(config)
+            svg_string = pipeline.process(
+                input_path,
+                output_path,
+                debug_stages=parsed_args.save_stages
+            )
+            
+            if parsed_args.validate:
+                print("\nValidating output...")
+                validation = pipeline._stage8_validate()
+                
+                print(f"\nValidation Results:")
+                print(f"  Coverage: {validation['coverage']:.1f}%")
+                print(f"  Gap pixels: {validation['gap_pixels']}")
+                print(f"  Status: {'PASS' if validation['gap_pixels'] == 0 else 'WARN'}")
+            
+            return 0
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return 1
+    
     if parsed_args.slic:
         # SLIC-based poster pipeline
         print("Mode: SLIC-based poster pipeline (spatial + color quantization)")
