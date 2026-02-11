@@ -158,5 +158,81 @@ The high component count in Phase 3 was misleading. Despite thousands of disconn
 ### Conclusion
 The shared-boundary + Gaussian smoothing approach works end-to-end!
 
-**Next**: Phase 6 - Landscape applicability test
+---
 
+## Phase 6: Landscape Applicability
+**Status**: PASS (All configurations)
+
+### Test Image
+- `test_images/img1.jpg`: 680x680 landscape (no central focus)
+
+### Results
+
+| Colors | Sigma | Adjacencies | Regions | Dropout | Time  | Status |
+|--------|-------|-------------|---------|---------|-------|--------|
+| 12     | 0.8   | 65          | 12/12   | 0.0%    | 8.0s  | PASS   |
+| 20     | 0.8   | 161         | 20/20   | 0.0%    | 9.8s  | PASS   |
+| 12     | 1.5   | 65          | 12/12   | 0.0%    | 6.1s  | PASS   |
+
+### Key Findings
+1. **Fast**: 6-10 seconds total processing time
+2. **Scalable**: Handles 161 adjacencies (20 colors) without issues
+3. **Zero dropout**: All regions preserved
+4. **No tiny regions**: All regions >100 pixels (no speckles)
+
+### Comparison to Logo Images
+- Landscape has more adjacencies (65-161 vs 62)
+- Still fast (under 10s)
+- No quality degradation
+
+---
+
+# Final Decision Document
+
+## Validation Summary
+
+| Phase | Description | Status | Key Metric |
+|-------|-------------|--------|------------|
+| 1 | Baseline | Complete | 52 regions, 21.58s |
+| 2 | Synthetic Gap Test | **PASS** | 3/4 sigma values: 99% coverage, 0 overlap |
+| 3 | Topology Check | WARNING | High fragmentation (8K components) |
+| 4 | Boundary Coverage | **PASS** | 176% coverage, only 62 adjacencies |
+| 5 | End-to-End | **PASS** | 100% coverage, 0 dropouts, all dark colors preserved |
+| 6 | Landscape | **PASS** | 0% dropout, 6-10s runtime |
+
+## Root Causes of Warnings
+
+### Phase 3 Warning: Extreme Fragmentation
+**Cause**: K-means quantization without spatial regularization creates salt-and-pepper noise
+**Impact**: Minimal - Phase 4 shows only 62 adjacencies despite 8K components
+**Mitigation**: Not needed for correctness, but spatial regularization could improve aesthetics
+
+## Best Sigma Values Found
+- **Recommended**: 0.8, 1.5, 1.8, 2.0
+- **Avoid**: 1.2 (caused overlaps in synthetic test)
+
+## Recommendation
+
+### ✅ PROCEED with Shared-Boundary Implementation
+
+**Rationale**:
+1. **Theoretically sound**: Phase 2 proved zero overlap achievable
+2. **Practically viable**: Phase 5 showed 100% coverage, 0 dropouts
+3. **Scalable**: Phase 6 demonstrated landscape applicability
+4. **Robust**: Works across different sigma values and image types
+
+**Implementation Notes**:
+1. Use sigma in range 0.8-2.0 (avoid 1.2)
+2. Handle boundary wrapping carefully (use `mode='wrap'`)
+3. High fragmentation is OK - adjacency count stays manageable
+4. Consider spatial regularization in quantization for cleaner aesthetics (optional)
+
+**Expected Benefits**:
+- Eliminates gaps between regions
+- Consistent smoothing across shared edges
+- Simpler topology than independent region smoothing
+
+---
+
+*Spike completed on 2026-02-11*
+*Branch: `spike/validate-shared-boundaries-opencode-20260211`*
