@@ -17,6 +17,7 @@ from apexvec.boundary_smoother import (
 )
 from apexvec.svg_to_png import svg_to_png
 from apexvec.quantization import slic_quantize
+from apexvec.region_merger import merge_small_regions_same_color
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +98,11 @@ class PosterPipeline:
         )
         print(f"  Found {len(regions)} regions")
         
-        # Merge small isolated regions to reduce artifacts
+        # Merge small isolated regions to reduce artifacts (same-color only)
         if len(regions) > 0:
-            regions = merge_small_regions(
-                regions, label_map, 
-                merge_threshold_size=self.config.min_region_size * 2
+            regions = merge_small_regions_same_color(
+                regions,
+                min_area=self.config.min_region_size * 2
             )
             print(f"  After merging: {len(regions)} regions")
         
