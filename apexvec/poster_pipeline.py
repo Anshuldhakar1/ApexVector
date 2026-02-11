@@ -89,6 +89,15 @@ class PosterPipeline:
         if self.save_stages:
             quantized_img = palette[label_map]
             self._save_stage_image(quantized_img, "stage_02_quantized.png")
+            
+            # Add quantization visualization
+            from apexvec.debug_visualization import visualize_quantization
+            visualize_quantization(
+                ingest_result.image_srgb,
+                label_map,
+                palette,
+                self.stages_dir / "stage_01_quantization_viz.png"
+            )
         
         # Step 3: Extract regions from quantized image
         print("Step 3/6: Extracting regions...")
@@ -108,6 +117,14 @@ class PosterPipeline:
         
         if self.save_stages:
             self._save_region_mask(regions, ingest_result.image_srgb.shape, "stage_03_regions.png")
+            
+            # Add region boundary visualization
+            from apexvec.debug_visualization import visualize_regions
+            visualize_regions(
+                ingest_result.image_srgb,
+                label_map,
+                self.stages_dir / "stage_02_regions_viz.png"
+            )
         
         # Step 4: Vectorize regions with boundary smoothing
         print("Step 4/6: Vectorizing regions with smooth boundaries...")
@@ -201,6 +218,19 @@ class PosterPipeline:
                 "Regions found": len(regions),
                 "Regions vectorized": len(vector_regions)
             }, "stage_06_timing.txt")
+            
+            # Add comparison panel
+            if png_result:
+                from apexvec.debug_visualization import create_comparison_panel
+                from PIL import Image
+                
+                svg_img = np.array(Image.open(png_result))
+                create_comparison_panel(
+                    ingest_result.image_srgb,
+                    palette[label_map],
+                    svg_img,
+                    self.stages_dir / "stage_07_comparison.png"
+                )
         
         return svg_string
     
