@@ -165,11 +165,11 @@ class ApexConfig:
     """Configuration for poster-style vectorization pipeline."""
     n_colors: int = 12
     min_region_area_ratio: float = 0.001
-    spline_smoothness: float = 0.5
-    max_regions: int = 20
+    spline_smoothness: float = 0.1  # Reduced to prevent gaps
+    max_regions: int = 100
     
     # Output
-    precision: int = 2
+    precision: int = 1  # Reduced precision for cleaner coordinates
 
 
 class VectorizationError(Exception):

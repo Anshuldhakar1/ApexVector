@@ -366,7 +366,7 @@ class PosterFirstPipeline:
     
     def _stage5_smooth_boundaries(self) -> List[SharedEdge]:
         """Stage 5: Gaussian smoothing on shared edges."""
-        sigma = self.config.spline_smoothness * 3  # Scale to reasonable range
+        sigma = self.config.spline_smoothness  # Use directly, default is 0.1
         
         for edge in self.shared_edges:
             points = edge.points
@@ -418,13 +418,16 @@ class PosterFirstPipeline:
             if not region.edge_ids:
                 continue
             
-            # Build path from edges
+            # Sort edges to form a closed loop
+            sorted_edges = self._sort_region_edges(region)
+            if not sorted_edges:
+                continue
+            
+            # Build path from sorted edges
             path_parts = []
             first = True
             
-            for edge_idx, reversed_dir in zip(
-                region.edge_ids, region.edge_directions
-            ):
+            for edge_idx, reversed_dir in sorted_edges:
                 if edge_idx >= len(self.shared_edges):
                     continue
                 
@@ -438,12 +441,28 @@ class PosterFirstPipeline:
                 if reversed_dir:
                     points = points[::-1]
                 
-                for (y, x) in points:
+                for i, (y, x) in enumerate(points):
                     if first:
                         path_parts.append(
                             f"M{x:.{precision}f},{y:.{precision}f}"
                         )
                         first = False
+                    elif i == 0:
+                        # Start of new edge - should connect to previous
+                        # Skip if same as last point to avoid duplicates
+                        last_point = path_parts[-1]
+                        # Extract coords from last "Lx,y" or "Mx,y"
+                        try:
+                            last_coords = last_point[1:].split(',')
+                            last_x, last_y = float(last_coords[0]), float(last_coords[1])
+                            if abs(x - last_x) > 0.01 or abs(y - last_y) > 0.01:
+                                path_parts.append(
+                                    f"L{x:.{precision}f},{y:.{precision}f}"
+                                )
+                        except:
+                            path_parts.append(
+                                f"L{x:.{precision}f},{y:.{precision}f}"
+                            )
                     else:
                         path_parts.append(
                             f"L{x:.{precision}f},{y:.{precision}f}"
@@ -463,6 +482,77 @@ class PosterFirstPipeline:
                     f'fill-rule="evenodd"/>'
                 )
         
+        return self._stage6_build_svg_complete(path_elements)
+    
+    def _sort_region_edges(self, region: PosterRegion) -> List[Tuple[int, bool]]:
+        """
+        Sort edges to form a proper closed loop.
+        
+        Returns list of (edge_idx, reversed) tuples in order.
+        """
+        if len(region.edge_ids) == 0:
+            return []
+        
+        if len(region.edge_ids) == 1:
+            return [(region.edge_ids[0], region.edge_directions[0])]
+        
+        # Build edge list with their endpoints
+        edges_with_points = []
+        for idx, (edge_idx, rev) in enumerate(zip(region.edge_ids, region.edge_directions)):
+            if edge_idx >= len(self.shared_edges):
+                continue
+            edge = self.shared_edges[edge_idx]
+            points = edge.smoothed_points if edge.smoothed_points is not None else edge.points
+            if rev:
+                points = points[::-1]
+            
+            start = tuple(points[0])
+            end = tuple(points[-1])
+            edges_with_points.append((edge_idx, rev, start, end))
+        
+        if not edges_with_points:
+            return []
+        
+        # Simple greedy chaining
+        sorted_edges = [edges_with_points[0]]
+        used = {0}
+        
+        while len(sorted_edges) < len(edges_with_points):
+            current_end = sorted_edges[-1][3]  # End of last edge
+            
+            # Find next edge that starts at current_end
+            found = False
+            for i, (e_idx, rev, start, end) in enumerate(edges_with_points):
+                if i in used:
+                    continue
+                
+                # Check if this edge starts where current ends
+                if abs(start[0] - current_end[0]) < 1 and abs(start[1] - current_end[1]) < 1:
+                    sorted_edges.append((e_idx, rev, start, end))
+                    used.add(i)
+                    found = True
+                    break
+                
+                # Check if reversed edge starts where current ends
+                if abs(end[0] - current_end[0]) < 1 and abs(end[1] - current_end[1]) < 1:
+                    # Use reversed
+                    sorted_edges.append((e_idx, not rev, end, start))
+                    used.add(i)
+                    found = True
+                    break
+            
+            if not found:
+                # Can't find connected edge, just add remaining
+                for i, (e_idx, rev, start, end) in enumerate(edges_with_points):
+                    if i not in used:
+                        sorted_edges.append((e_idx, rev, start, end))
+                        used.add(i)
+                        break
+        
+        return [(e[0], e[1]) for e in sorted_edges]
+    
+    def _stage6_build_svg_complete(self, path_elements):
+        """Assemble final SVG."""
         svg = f'''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {self.ingest_result.width} {self.ingest_result.height}" width="{self.ingest_result.width}" height="{self.ingest_result.height}">
   {'  '.join(path_elements)}

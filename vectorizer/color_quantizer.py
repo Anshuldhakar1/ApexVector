@@ -1,7 +1,7 @@
 """Color quantization using K-means in LAB color space."""
 from typing import Tuple
 import numpy as np
-from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.cluster import KMeans
 from skimage import color
 
 from vectorizer.types import VectorizationError
@@ -36,20 +36,17 @@ def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
 def quantize_colors(
     image: np.ndarray,
     n_colors: int = 12,
-    n_init: int = 3,
-    max_samples: int = 50000
+    n_init: int = 10
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Quantize image colors using K-means in LAB space.
     
-    For large images (>1M pixels), uses subsampling for K-means fitting
-    to improve performance while maintaining quality.
+    Uses standard K-means for accurate color quantization.
     
     Args:
         image: Input image in linear RGB space (H, W, 3)
         n_colors: Number of colors to quantize to
-        n_init: Number of K-means++ initializations (reduced for speed)
-        max_samples: Maximum pixels to use for K-means fitting
+        n_init: Number of K-means++ initializations
         
     Returns:
         Tuple of (label_map, palette)
@@ -61,44 +58,21 @@ def quantize_colors(
     """
     try:
         h, w = image.shape[:2]
-        n_pixels = h * w
         
         # Convert to LAB for perceptually uniform clustering
         lab_image = rgb_to_lab(image)
         pixels_lab = lab_image.reshape(-1, 3)
         
-        # For large images, subsample pixels for K-means fitting
-        if n_pixels > max_samples:
-            # Stratified sampling: take every Nth pixel
-            step = max(1, n_pixels // max_samples)
-            indices = np.arange(0, n_pixels, step)[:max_samples]
-            sample_pixels = pixels_lab[indices]
-            
-            # Use MiniBatchKMeans for faster convergence on large datasets
-            kmeans = MiniBatchKMeans(
-                n_clusters=n_colors,
-                init='k-means++',
-                n_init=n_init,
-                random_state=42,
-                batch_size=1000,
-                max_iter=100
-            )
-            kmeans.fit(sample_pixels)
-            
-            # Predict labels for ALL pixels using the fitted model
-            labels = kmeans.predict(pixels_lab)
-            palette_lab = kmeans.cluster_centers_
-        else:
-            # For smaller images, use standard K-means on all pixels
-            kmeans = KMeans(
-                n_clusters=n_colors,
-                init='k-means++',
-                n_init=n_init,
-                random_state=42,
-                max_iter=300
-            )
-            labels = kmeans.fit_predict(pixels_lab)
-            palette_lab = kmeans.cluster_centers_
+        # Use standard K-means for best quality
+        kmeans = KMeans(
+            n_clusters=n_colors,
+            init='k-means++',
+            n_init=n_init,
+            random_state=42,
+            max_iter=300
+        )
+        labels = kmeans.fit_predict(pixels_lab)
+        palette_lab = kmeans.cluster_centers_
         
         # Reshape labels back to image shape
         label_map = labels.reshape(h, w)
