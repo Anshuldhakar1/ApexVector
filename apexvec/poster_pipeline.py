@@ -143,6 +143,13 @@ class PosterPipeline:
             self._save_vector_regions_preview(vector_regions, ingest_result.image_srgb.shape, "stage_04_vectorized.png")
             self._save_region_statistics(vector_regions, "stage_04_stats.txt")
         
+        # Validate color fidelity: all regions must have fill_color from palette
+        print("  Validating color fidelity...")
+        for i, vr in enumerate(vector_regions):
+            if vr.fill_color is None:
+                logger.warning(f"Region {i} has no fill_color, using default")
+                vr.fill_color = palette[0] if len(palette) > 0 else np.array([128, 128, 128])
+        
         # Step 5: Generate SVG with transparent background
         print("Step 5/6: Generating SVG...")
         svg_string = regions_to_svg(
