@@ -1,2 +1,2 @@
-Current Phase: Phase 2 - Synthetic Gap Test
+Current Phase: Phase 3 - Topology Check
 Status: IN_PROGRESS
