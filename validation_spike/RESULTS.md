@@ -77,3 +77,47 @@ python -m apexvec input.jpg -o output.svg --slic --colors 12 --save-stages debug
 - resvg CLI not available in test environment (fallback to cairosvg)
 - Edge count equals region count (each region appears to have 1 edge) - 
   this suggests regions may not be properly forming closed loops in some cases
+
+## Comparison: SLIC vs Edge-Aware Pipeline
+
+### SLIC Pipeline Issues
+- **Collage-like appearance**: Spatial coherence forces smooth, blobby regions
+- **Lost details**: Toes/claws get merged into larger regions
+- **Pieces stuck together**: Over-smoothing at boundaries
+
+### Edge-Aware Pipeline Improvements
+- **No spatial weighting**: Pure K-means in LAB space preserves sharp color edges
+- **Better color fidelity**: Stage 2 shows clean teal/cream Snorlax (not psychedelic)
+- **32 regions vs 21**: More granular segmentation preserves shape better
+- **Grayscale detail detection**: Edge detection on luminance finds small features
+
+### Visual Comparison
+
+| Stage | SLIC | Edge-Aware |
+|-------|------|------------|
+| Quantization | Washed, blobby colors | Sharp, accurate colors |
+| Regions | 21 regions, collage look | 32 regions, defined edges |
+| Toes/claws | Lost in smoothing | Preserved as distinct regions |
+
+## Usage
+
+```bash
+# Edge-aware pipeline (recommended for poster style)
+python -m apexvec input.jpg -o output.svg --edge-poster --colors 12
+
+# SLIC pipeline (if you want spatial smoothing)
+python -m apexvec input.jpg -o output.svg --slic --colors 12
+
+# Original poster pipeline
+python -m apexvec input.jpg -o output.svg --poster --colors 12
+```
+
+## Key Insight
+
+The grayscale detail mask (Stage 3) correctly identifies edges and small features:
+- Uses Canny edge detection on luminance
+- Highlights toes, claws, and boundaries in red
+- Could be used for adaptive smoothing (less smoothing on details)
+
+Current limitation: Detail threshold (0.15% of image) too strict for this image size.
+For 431x431 image, details need to be < 278 pixels - toes are larger than this.
