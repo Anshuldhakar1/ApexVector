@@ -130,5 +130,33 @@ While there are 8,913 connected components, they share only **62 unique adjacenc
 ### Key Finding
 The high component count in Phase 3 was misleading. Despite thousands of disconnected regions, they only touch each other in 62 unique ways. Shared-boundary extraction is tractable!
 
-**Next**: Phase 5 - End-to-end reconstruction test
+---
+
+## Phase 5: End-to-End Reconstruction
+**Status**: PASS (All sigma values)
+
+### Results
+
+| Sigma | Regions | Dropout | Dark Preserved | Coverage | Status |
+|-------|---------|---------|----------------|----------|--------|
+| 0.8   | 12/12   | 0       | 3/3            | 100%     | PASS   |
+| 1.5   | 12/12   | 0       | 3/3            | 100%     | PASS   |
+| 2.0   | 12/12   | 0       | 3/3            | 100%     | PASS   |
+
+### Key Findings
+1. **Zero dropouts**: All 12 color regions successfully reconstructed
+2. **Dark colors preserved**: All 3 dark regions present (no systematic loss)
+3. **100% coverage**: All boundary pixels accounted for
+4. **All sigma values work**: Gaussian smoothing is stable across range
+
+### Method
+1. Extracted shared boundaries for all 62 adjacency pairs
+2. Applied Gaussian smoothing per boundary (mode='wrap' for continuity)
+3. Reconstructed region polygons by combining smoothed boundaries
+4. Verified no regions lost and dark colors preserved
+
+### Conclusion
+The shared-boundary + Gaussian smoothing approach works end-to-end!
+
+**Next**: Phase 6 - Landscape applicability test
 
