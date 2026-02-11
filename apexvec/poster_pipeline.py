@@ -16,6 +16,7 @@ from apexvec.boundary_smoother import (
     extract_contours_subpixel
 )
 from apexvec.svg_to_png import svg_to_png
+from apexvec.quantization import slic_quantize
 
 logger = logging.getLogger(__name__)
 
@@ -361,65 +362,34 @@ class PosterPipeline:
 def quantize_colors(
     image: np.ndarray,
     num_colors: int = 12,
-    max_samples: int = 500000
+    compactness: float = 10.0,
+    sigma: float = 1.0
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Quantize image colors using K-means in LAB space with sampling for large images."""
-    from sklearn.cluster import MiniBatchKMeans
+    """
+    Quantize image colors using SLIC superpixels for spatial coherence.
     
-    # Ensure image is in [0, 1] range for skimage
-    if image.max() > 1.0:
-        image_float = image / 255.0
-    else:
-        image_float = image
+    SLIC provides better spatial coherence than K-means by combining
+    color similarity with spatial proximity, reducing fragmentation.
     
-    # Convert to LAB color space
-    image_lab = rgb2lab(image_float)
-    
-    # Reshape for K-means
-    h, w = image_lab.shape[:2]
-    pixels_lab = image_lab.reshape(-1, 3)
-    
-    # Sample pixels for large images to speed up clustering
-    n_pixels = len(pixels_lab)
-    if n_pixels > max_samples:
-        # Random sampling
-        rng = np.random.RandomState(42)
-        indices = rng.choice(n_pixels, max_samples, replace=False)
-        sample_pixels = pixels_lab[indices]
-        use_sampling = True
-    else:
-        sample_pixels = pixels_lab
-        use_sampling = False
-    
-    # Use MiniBatchKMeans for speed
-    logger.info(f"Clustering {len(sample_pixels):,} pixels into {num_colors} colors...")
-    kmeans = MiniBatchKMeans(
-        n_clusters=num_colors,
-        random_state=42,
-        n_init=3,
-        batch_size=10000,
-        max_iter=100
+    Args:
+        image: Input image (H, W, 3) uint8
+        num_colors: Target number of superpixels/colors
+        compactness: Balance between color and spatial proximity
+                     (higher = more spatially regular)
+        sigma: Gaussian smoothing sigma before segmentation
+        
+    Returns:
+        Tuple of (label_map, palette):
+        - label_map: (H, W) array of palette indices
+        - palette: (N, 3) uint8 palette in sRGB
+    """
+    return slic_quantize(
+        image,
+        n_segments=num_colors,
+        compactness=compactness,
+        sigma=sigma,
+        random_state=42
     )
-    kmeans.fit(sample_pixels)
-    
-    # Predict labels for all pixels
-    labels = kmeans.predict(pixels_lab)
-    
-    # Reshape labels back to image shape
-    label_map = labels.reshape(h, w)
-    
-    # Convert cluster centers back to RGB
-    centers_lab = kmeans.cluster_centers_
-    palette_lab = centers_lab.reshape(num_colors, 1, 3)
-    palette_rgb = lab2rgb(palette_lab).reshape(num_colors, 3)
-    
-    # Convert to uint8
-    palette = (np.clip(palette_rgb, 0, 1) * 255).astype(np.uint8)
-    
-    if use_sampling:
-        logger.info(f"Used {max_samples:,} samples from {n_pixels:,} total pixels")
-    
-    return label_map, palette
 
 
 def extract_regions_from_quantized(
