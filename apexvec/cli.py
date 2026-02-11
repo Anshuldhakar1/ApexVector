@@ -3,15 +3,17 @@ import argparse
 import sys
 from pathlib import Path
 
+from apexvec.pipeline import UnifiedPipeline
 from apexvec.poster_pipeline import PosterPipeline
-from apexvec.types import AdaptiveConfig
+from apexvec.poster_first_pipeline import PosterFirstPipeline
+from apexvec.types import AdaptiveConfig, ApexConfig
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser."""
     parser = argparse.ArgumentParser(
-        prog='apexvec',
-        description='Convert raster images to poster-style SVG'
+        prog='vectorizer',
+        description='Convert raster images to optimized SVG'
     )
     
     parser.add_argument(
@@ -27,25 +29,58 @@ def create_parser() -> argparse.ArgumentParser:
     )
     
     parser.add_argument(
-        '--colors',
-        type=int,
-        default=24,
-        help='Number of colors (default: 24)'
+        '--speed',
+        action='store_true',
+        help='Fast mode - lower quality but faster'
     )
     
+    parser.add_argument(
+        '--quality',
+        action='store_true',
+        help='Quality mode - higher quality but slower'
+    )
+    
+    parser.add_argument(
+        '--segments',
+        type=int,
+        default=400,
+        help='Number of SLIC segments (default: 400)'
+    )
+    
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='Validate output quality'
+    )
+
     parser.add_argument(
         '--save-stages',
-        action='store_true',
-        help='Save intermediate stage results for debugging'
-    )
-    
-    parser.add_argument(
-        '--stages-dir',
         type=str,
-        default='./stages',
-        help='Directory to save stage results (default: ./stages)'
+        default=None,
+        help='Directory to save pipeline stage debug images'
     )
-    
+
+    parser.add_argument(
+        '--preset',
+        type=str,
+        choices=['lossless', 'standard', 'compact', 'thumbnail'],
+        default='standard',
+        help='Optimization preset: lossless (archival), standard (balanced), compact (smaller), thumbnail (aggressive)'
+    )
+
+    parser.add_argument(
+        '--poster',
+        action='store_true',
+        help='Poster-style mode - flat colors with smooth boundaries'
+    )
+
+    parser.add_argument(
+        '--colors',
+        type=int,
+        default=12,
+        help='Number of colors for poster mode (default: 12)'
+    )
+
     return parser
 
 
@@ -68,31 +103,99 @@ def main(args=None):
     
     # Create configuration
     config = AdaptiveConfig()
-    config.transparent_background = True
-    config.boundary_smoothing_passes = 2
-    config.boundary_smoothing_strength = 0.5
+
+    # Handle save_stages if provided
+    if parsed_args.save_stages:
+        config.save_stages = Path(parsed_args.save_stages)
+        config.save_stages.mkdir(parents=True, exist_ok=True)
+        print(f"Debug stages will be saved to: {config.save_stages}")
+
+    if parsed_args.poster:
+        # Poster-style mode with shared boundaries
+        print("Mode: Poster-style with shared boundaries (flat colors, gap-free)")
+        
+        config = ApexConfig(n_colors=parsed_args.colors)
+        
+        try:
+            # Use new PosterFirstPipeline with shared boundaries
+            pipeline = PosterFirstPipeline(config)
+            svg_string = pipeline.process(
+                input_path,
+                output_path,
+                debug_stages=parsed_args.save_stages
+            )
+            
+            # Validate if requested
+            if parsed_args.validate:
+                print("\nValidating output...")
+                # Run validation stage
+                validation = pipeline._stage7_validate()
+                
+                print(f"\nValidation Results:")
+                print(f"  Coverage: {validation['coverage']:.1f}%")
+                print(f"  Gap pixels: {validation['gap_pixels']}")
+                print(f"  Status: {'PASS' if validation['gap_pixels'] == 0 else 'WARN'}")
+            
+            return 0
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return 1
+    
+    # Standard (unified) pipeline mode
+    config = AdaptiveConfig()
+    
+    # Handle save_stages if provided
+    if parsed_args.save_stages:
+        config.save_stages = Path(parsed_args.save_stages)
+        config.save_stages.mkdir(parents=True, exist_ok=True)
+        print(f"Debug stages will be saved to: {config.save_stages}")
+
+    if parsed_args.speed:
+        # Fast mode: fewer segments, looser tolerances
+        config.slic_segments = 100
+        config.max_bezier_error = 5.0
+        config.merge_threshold_delta_e = 10.0
+        print("Mode: Speed (fast, lower quality)")
+    elif parsed_args.quality:
+        # Quality mode: more segments, tighter tolerances
+        config.slic_segments = 800
+        config.max_bezier_error = 1.0
+        config.merge_threshold_delta_e = 3.0
+        print("Mode: Quality (slow, higher quality)")
+    else:
+        # Default mode
+        config.slic_segments = parsed_args.segments
+        print("Mode: Balanced")
     
     # Create pipeline and process
     try:
-        print(f"Converting with {parsed_args.colors} colors...")
+        pipeline = UnifiedPipeline(config)
         
-        pipeline = PosterPipeline(
-            config=config,
-            num_colors=parsed_args.colors,
-            save_stages=parsed_args.save_stages,
-            stages_dir=Path(parsed_args.stages_dir) if parsed_args.save_stages else None
-        )
-        svg_string = pipeline.process(input_path, output_path)
+        # Map preset to optimize parameter
+        optimize = parsed_args.preset if parsed_args.preset != 'lossless' else False
+        svg_string = pipeline.process(input_path, output_path, optimize=optimize)
         
-        print(f"\nSuccess! Output saved to: {output_path}")
-        print(f"PNG preview: {output_path.with_suffix('.png')}")
+        # Validate if requested
+        if parsed_args.validate:
+            print("\nValidating output...")
+            results = pipeline.validate(input_path, svg_string)
+            
+            print(f"\nValidation Results:")
+            print(f"  SSIM: {results['ssim']:.3f} {'✓' if results['ssim_pass'] else '✗'}")
+            print(f"  Delta E: {results['delta_e']:.2f} {'✓' if results['delta_e_pass'] else '✗'}")
+            print(f"  SVG size: {results['svg_size_bytes']:,} bytes")
+            print(f"  Size reduction: {results['size_reduction']:.1f}%")
+            print(f"  Overall: {'PASS' if results['overall_pass'] else 'FAIL'}")
+            
+            return 0 if results['overall_pass'] else 1
         
         return 0
         
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
         return 1
 
 

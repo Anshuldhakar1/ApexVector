@@ -41,3 +41,31 @@ If a test fails:
 - `validation_spike/RESULTS.md`
 - `validation_spike/artifacts/*`
 - Phase scripts under `validation_spike/tests/`
+
+## Poster Pipeline Debug Mode
+
+When `--debug-stages DIR` is passed:
+
+1. Create `DIR/` if not exists
+2. After each stage, write:
+   - `stage{N}_{name}.png`: overlay visualization
+   - `stage{N}_{name}_data.pkl`: serializable intermediate state
+3. Final output: `comparison.png` (4-panel layout)
+4. If any stage throws, write `stage{N}_error.txt` with traceback and partial outputs
+
+Gap mask colors:
+- Magenta (#ff00ff): unintended transparency (critical bug)
+- Yellow (#ffff00): unexpected fill (shouldn't happen)
+- Red overlay: color mismatch >10 RGB units
+
+Rasterization priority:
+1. Try `cairosvg.svg2png()`
+2. Try `subprocess.run(["rsvg-convert", ...])`
+3. Try `subprocess.run(["inkscape", "--export-type=png", ...])`
+4. Fail with helpful installation message
+
+Poster aesthetic requirements:
+- Solid fills only (`fill="#rrggbb"`, no `url()`, no `rgba()`)
+- No stroke on region paths
+- Transparent background (no `<rect>` fill)
+- `fill-rule="evenodd"` for holes

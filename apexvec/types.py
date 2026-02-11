@@ -2,12 +2,23 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 from enum import Enum, auto
+from pathlib import Path
 import numpy as np
 
 
 class RegionKind(Enum):
-    """Classification of region types."""
+    """Classification of region types for routing to appropriate strategy."""
     FLAT = auto()
+    GRADIENT = auto()
+    EDGE = auto()
+    DETAIL = auto()
+
+
+class GradientType(Enum):
+    """Types of gradients supported."""
+    LINEAR = auto()
+    RADIAL = auto()
+    MESH = auto()
 
 
 @dataclass
@@ -27,6 +38,13 @@ class BezierCurve:
 
 
 @dataclass
+class ColorStop:
+    """Color stop for gradients."""
+    offset: float  # 0.0 to 1.0
+    color: np.ndarray  # RGB array
+
+
+@dataclass
 class Region:
     """Input region from segmentation."""
     mask: np.ndarray
@@ -35,7 +53,9 @@ class Region:
     centroid: Optional[Tuple[float, float]] = None
     mean_color: Optional[np.ndarray] = None
     bbox: Optional[Tuple[int, int, int, int]] = None  # x, y, w, h
-    
+    kind: Optional[RegionKind] = None  # Classification result
+    gradient_coeffs: Optional[np.ndarray] = None  # For GRADIENT regions: shape (3, 3) coeffs
+
     def __post_init__(self):
         if self.centroid is None:
             coords = np.where(self.mask)
@@ -54,59 +74,72 @@ class Region:
 
 
 @dataclass
-class BezierPath:
-    """Path representing a vectorized region boundary."""
-    curves: List[BezierCurve] = field(default_factory=list)
-    is_closed: bool = True
-
-
-@dataclass
 class VectorRegion:
     """Vectorized output region."""
     kind: RegionKind
-    path: List[BezierCurve] = field(default_factory=list)  # Outer boundary
-    hole_paths: List[List[BezierCurve]] = field(default_factory=list)  # Holes
+    path: List[BezierCurve] = field(default_factory=list)
     fill_color: Optional[np.ndarray] = None
+    gradient_type: Optional[GradientType] = None
+    gradient_stops: List[ColorStop] = field(default_factory=list)
+    gradient_start: Optional[Point] = None
+    gradient_end: Optional[Point] = None
+    gradient_center: Optional[Point] = None
+    gradient_radius: Optional[float] = None
+    mesh_triangles: Optional[np.ndarray] = None
+    mesh_colors: Optional[np.ndarray] = None
     
+    # Validation
     def validate(self) -> bool:
-        """Validate region has required fields."""
-        return self.fill_color is not None and len(self.path) > 0
-
-
-@dataclass
-class ApexConfig:
-    """Configuration for poster-style vectorization pipeline."""
-    n_colors: int = 12
-    min_region_area_ratio: float = 0.001
-    spline_smoothness: float = 0.5
-    max_regions: int = 20
-    
-    # Output
-    precision: int = 2
+        """Validate region has required fields for its kind."""
+        if self.kind == RegionKind.FLAT:
+            return self.fill_color is not None and len(self.path) > 0
+        elif self.kind == RegionKind.GRADIENT:
+            return (self.gradient_type is not None and 
+                    len(self.gradient_stops) > 0 and 
+                    len(self.path) > 0)
+        elif self.kind == RegionKind.EDGE:
+            return len(self.path) > 0
+        elif self.kind == RegionKind.DETAIL:
+            return (self.mesh_triangles is not None and 
+                    self.mesh_colors is not None and
+                    len(self.path) > 0)
+        return False
 
 
 @dataclass
 class AdaptiveConfig:
     """Configuration for adaptive vectorization pipeline."""
+    # Segmentation
+    slic_segments: int = 400
+    slic_compactness: float = 20.0
+    slic_sigma: float = 1.0
+
     # Region merging
     merge_threshold_delta_e: float = 5.0
-    min_region_size: int = 100
-    
+    # min_region_size: int = 100
+    # min_region_size: int = 100
+    min_region_size: int = 25
+
+    # Classification thresholds
+    gradient_threshold: float = 0.3
+    edge_density_threshold: float = 0.1
+    detail_complexity_threshold: float = 0.5
+
     # Strategy parameters
     max_bezier_error: float = 2.0
-    
+    max_mesh_triangles: int = 500
+
     # Performance
     parallel_workers: int = -1  # -1 = auto
     use_gpu: bool = False
-    
+
     # Output
     precision: int = 2  # Decimal places for SVG coordinates
     simplify_tolerance: float = 0.8
-    
-    # Display options
-    transparent_background: bool = True
-    boundary_smoothing_passes: int = 3
-    boundary_smoothing_strength: float = 0.6
+
+    # Debug output
+    save_stages: Optional[Path] = None  # If set, write stage images here
+    stage_dpi: int = 150  # Resolution for stage visualization outputs
 
 
 @dataclass
@@ -118,6 +151,25 @@ class IngestResult:
     width: int
     height: int
     has_alpha: bool
+
+
+@dataclass
+class BezierPath:
+    """Path representing a vectorized region boundary."""
+    curves: List[BezierCurve] = field(default_factory=list)
+    is_closed: bool = True
+
+
+@dataclass
+class ApexConfig:
+    """Configuration for poster-style vectorization pipeline."""
+    n_colors: int = 12
+    min_region_area_ratio: float = 0.001
+    spline_smoothness: float = 0.1  # Reduced to prevent gaps
+    max_regions: int = 100
+    
+    # Output
+    precision: int = 1  # Reduced precision for cleaner coordinates
 
 
 class VectorizationError(Exception):

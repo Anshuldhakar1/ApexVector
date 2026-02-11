@@ -5,6 +5,7 @@ from apexvec.types import (
     AdaptiveConfig,
     IngestResult,
     RegionKind,
+    GradientType,
     VectorizationError,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "AdaptiveConfig",
     "IngestResult",
     "RegionKind",
+    "GradientType",
     "VectorizationError",
 ]

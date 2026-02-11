@@ -1,13 +1,10 @@
 """Boundary smoothing using cubic splines."""
-import logging
 from typing import List, Tuple, Optional
 import numpy as np
 from scipy import interpolate
 from skimage import measure
 
-from apexvec.types import Region, BezierPath, BezierCurve, Point, VectorizationError, ApexConfig
-
-logger = logging.getLogger(__name__)
+from apexvec.types import Region, BezierPath, BezierCurve, Point, ApexConfig, VectorizationError
 
 
 def extract_contours(mask: np.ndarray) -> List[np.ndarray]:
@@ -220,114 +217,3 @@ def smooth_region_boundaries(
         
     except Exception as e:
         raise VectorizationError(f"Boundary smoothing failed: {e}")
-
-
-def extract_contours_subpixel(mask: np.ndarray) -> Tuple[List[np.ndarray], List[np.ndarray]]:
-    """
-    Extract contours from a binary mask with subpixel precision.
-    
-    Returns both outer boundary contours and hole contours.
-    
-    Args:
-        mask: Binary mask array
-        
-    Returns:
-        Tuple of (outer_contours, hole_contours)
-        Each is a list of (N, 2) arrays with (x, y) coordinates
-    """
-    from skimage import measure
-    
-    # Find contours at sub-pixel level
-    contours = measure.find_contours(mask, 0.5)
-    
-    if not contours:
-        return [], []
-    
-    # Convert from (row, col) to (x, y) format and ensure closed loops
-    outer_contours = []
-    hole_contours = []
-    
-    for contour in contours:
-        # Convert coordinates
-        points = np.column_stack([contour[:, 1], contour[:, 0]])
-        
-        # Ensure closed loop
-        if len(points) > 2 and not np.allclose(points[0], points[-1]):
-            points = np.vstack([points, points[0]])
-        
-        # Determine if outer or hole based on area sign
-        # Outer contours are counter-clockwise (positive area)
-        # Hole contours are clockwise (negative area)
-        area = 0
-        n = len(points)
-        for i in range(n - 1):
-            area += (points[i + 1, 0] - points[i, 0]) * (points[i + 1, 1] + points[i, 1])
-        
-        if area < 0:  # Clockwise = hole
-            hole_contours.append(points)
-        else:  # Counter-clockwise = outer
-            outer_contours.append(points)
-    
-    return outer_contours, hole_contours
-
-
-def smooth_boundary_infallible(
-    points: np.ndarray,
-    smoothness_factor: float = 0.5,
-    min_points: int = 3
-) -> List[BezierCurve]:
-    """
-    Smooth a boundary using periodic spline fitting (infallible version).
-    
-    Args:
-        points: Array of boundary points (N, 2) in (x, y) format
-        smoothness_factor: Controls smoothing amount (0.1-2.0)
-        min_points: Minimum points required
-        
-    Returns:
-        List of BezierCurve objects (never empty for valid input)
-    """
-    if points is None or len(points) < min_points:
-        logger.warning("smooth_boundary_infallible: Insufficient points")
-        return []
-    
-    try:
-        # Fit periodic spline
-        t_values, spline_points = fit_periodic_spline(
-            points,
-            smoothness=smoothness_factor
-        )
-        
-        # Convert to Bezier curves
-        curves = spline_to_bezier(t_values, spline_points)
-        
-        return curves
-        
-    except Exception as e:
-        logger.warning(f"Smoothing failed: {e}, returning polyline")
-        # Fallback: return as polyline
-        return _points_to_polyline(points)
-
-
-def _points_to_polyline(points: np.ndarray) -> List[BezierCurve]:
-    """Convert points to polyline represented as Bezier curves."""
-    curves = []
-    n = len(points)
-    
-    for i in range(n - 1):
-        p0 = Point(float(points[i, 0]), float(points[i, 1]))
-        p3 = Point(float(points[i + 1, 0]), float(points[i + 1, 1]))
-        
-        # For straight lines, control points are at 1/3 and 2/3
-        p1 = Point(
-            (2 * p0.x + p3.x) / 3,
-            (2 * p0.y + p3.y) / 3
-        )
-        p2 = Point(
-            (p0.x + 2 * p3.x) / 3,
-            (p0.y + 2 * p3.y) / 3
-        )
-        
-        curves.append(BezierCurve(p0, p1, p2, p3))
-    
-    return curves
