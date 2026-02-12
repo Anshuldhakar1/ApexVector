@@ -762,13 +762,12 @@ class PosterFirstPipeline:
         return palette[label_map]
     
     def _visualize_regions(self, regions: List[PosterRegion]) -> np.ndarray:
-        """Visualize regions with random colors."""
+        """Visualize regions with PALETTE colors (not random)."""
         h, w = self.ingest_result.image_srgb.shape[:2]
         viz = np.zeros((h, w, 3), dtype=np.float32)
         
-        np.random.seed(42)
         for region in regions:
-            color = np.random.rand(3)
+            color = self.palette[region.color_idx]
             viz[region.mask] = color
         
         return viz
