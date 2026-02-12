@@ -121,3 +121,36 @@ The grayscale detail mask (Stage 3) correctly identifies edges and small feature
 
 Current limitation: Detail threshold (0.15% of image) too strict for this image size.
 For 431x431 image, details need to be < 278 pixels - toes are larger than this.
+
+## Fix: Region Visualization in poster_first_pipeline
+
+### Problem
+Stage 3 (regions) visualization used random colors instead of palette colors:
+```python
+# BROKEN - random colors
+for region in regions:
+    color = np.random.rand(3)  # Random!
+    viz[region.mask] = color
+```
+
+This caused:
+- Psychedelic/random colors in debug output
+- Granular/noisy appearance at boundaries
+- Difficult to verify correct region extraction
+
+### Fix
+Use palette colors for visualization:
+```python
+# FIXED - palette colors
+for region in regions:
+    color = self.palette[region.color_idx]  # Actual color!
+    viz[region.mask] = color
+```
+
+### Result
+- Stage 3 now shows actual Snorlax colors (teal/cream)
+- Boundaries between regions are clean
+- Proper visualization before smoothing is applied
+
+Note: Stage 3 shows RAW regions (pixel boundaries). Stage 5 shows SMOOTHED boundaries.
+The final SVG uses the smoothed boundaries from Stage 5.
