@@ -130,23 +130,38 @@ class Pipeline:
         return quantize_colors(image, self.config.n_colors)
     
     def _get_dominant_color(self, quantized: ImageArray) -> Color:
-        """Get the most frequent color in the quantized image.
+        """Get the background color from the quantized image.
         
-        This is typically the background color.
+        Samples from corner regions where background is most likely
+        to be visible, even when the subject fills most of the frame.
         
         Args:
             quantized: Quantized image
             
         Returns:
-            Most frequent color as RGB tuple
+            Background color as RGB tuple
         """
-        # Reshape to list of pixels
-        pixels = quantized.reshape(-1, quantized.shape[2])
+        h, w = quantized.shape[:2]
         
-        # Count unique colors
-        unique, counts = np.unique(pixels, axis=0, return_counts=True)
+        # Sample corner regions (where background is most likely visible)
+        corner_size = max(5, min(h, w) // 20)  # 5% of image size or at least 5 pixels
+        corner_pixels = []
         
-        # Get most frequent
+        # Top-left corner
+        corner_pixels.extend(quantized[:corner_size, :corner_size].reshape(-1, 3))
+        # Top-right corner
+        corner_pixels.extend(quantized[:corner_size, -corner_size:].reshape(-1, 3))
+        # Bottom-left corner
+        corner_pixels.extend(quantized[-corner_size:, :corner_size].reshape(-1, 3))
+        # Bottom-right corner
+        corner_pixels.extend(quantized[-corner_size:, -corner_size:].reshape(-1, 3))
+        
+        corner_pixels = np.array(corner_pixels)
+        
+        # Count unique colors in corners
+        unique, counts = np.unique(corner_pixels, axis=0, return_counts=True)
+        
+        # Get most frequent corner color (background)
         dominant = unique[np.argmax(counts)]
         
         return tuple(int(c) for c in dominant)
