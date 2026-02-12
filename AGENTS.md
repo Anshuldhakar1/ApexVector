@@ -1,71 +1,273 @@
 ## agents.md
 
-### Objective
-Validate whether **shared boundaries + Gaussian smoothing** can produce gap-free, flat-color SVGs from `./img0.jpg` in the `apexvector` repository, without rewriting the main pipeline.
+## Project Overview
 
-### Operating Mode
-You are running a validation spike. Prefer measurement and falsification over feature building.
+ApexVector is a Python image vectorization pipeline that converts raster images (JPG/PNG) to optimized SVG using adaptive region classification and shared boundary extraction.
 
-### Musts
-- Use git frequently; commit after every phase and every meaningful test result.
-- Keep changes isolated under `validation_spike/` unless a tiny hook is unavoidable.
-- Record every command executed and every numeric result in `validation_spike/RESULTS.md`.
-- Keep outputs deterministic where possible (fixed RNG seeds for quantization).
+### Key Components
 
-### Must Nots
-- Do not refactor the production pipeline as part of the spike.
-- Do not “fix” issues by adding a background rectangle; background must remain transparent unless explicitly required by test.
-- Do not introduce gradients; all fills must be solid colors.
+- **Main Package**: `apexvec/` - Core vectorization pipeline
+- **Poster Pipeline**: `corrected.py`, `optimized_v2.py` - Standalone poster-style vectorization
+- **CLI**: `python -m apexvec` - Command-line interface
 
-### Pass/Fail Criteria
-A phase is PASS only if the documented numeric criteria are met (gap pixels, coverage %, dropout counts). Visual-only judgment is not sufficient.
+## Build / Lint / Test Commands
 
-### Debugging Guidance
-If a test fails:
-1. Identify which invariant failed (gap, dropout, coverage, topology).
-2. Add a small diagnostic artifact (e.g., missing-pixel overlay) under `validation_spike/artifacts/`.
-3. Re-run only the relevant phase first.
-4. Only then re-run the full chain.
+### Environment Setup
 
-### Git Practices (Strict)
-- Work on a fresh branch named `spike/validate-shared-boundaries-<name>-<yyyymmdd>`.
-- No force pushes.
-- Commit messages must include the phase and result, e.g.:
-  - `spike: phase4 coverage 92% FAIL`
-  - `spike: phase5 gaps 0.03% PASS`
+```bash
+# Create virtual environment
+uv venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
 
-### Inputs
-- `./img0.jpg` at repo root (provided by user)
+# Install dependencies
+uv pip install -r requirements.txt
+```
 
-### Outputs
-- `validation_spike/RESULTS.md`
-- `validation_spike/artifacts/*`
-- Phase scripts under `validation_spike/tests/`
+### Running Tests
 
-## Poster Pipeline Debug Mode
+```bash
+# Run all tests (when tests exist)
+pytest
 
-When `--debug-stages DIR` is passed:
+# Run a single test file
+pytest tests/test_pipeline.py
 
-1. Create `DIR/` if not exists
-2. After each stage, write:
-   - `stage{N}_{name}.png`: overlay visualization
-   - `stage{N}_{name}_data.pkl`: serializable intermediate state
-3. Final output: `comparison.png` (4-panel layout)
-4. If any stage throws, write `stage{N}_error.txt` with traceback and partial outputs
+# Run a specific test function
+pytest tests/test_pipeline.py::test_quantization
 
-Gap mask colors:
-- Magenta (#ff00ff): unintended transparency (critical bug)
-- Yellow (#ffff00): unexpected fill (shouldn't happen)
-- Red overlay: color mismatch >10 RGB units
+# Run with coverage
+pytest --cov=apexvec --cov-report=html
 
-Rasterization priority:
-1. Try `cairosvg.svg2png()`
-2. Try `subprocess.run(["rsvg-convert", ...])`
-3. Try `subprocess.run(["inkscape", "--export-type=png", ...])`
-4. Fail with helpful installation message
+# Run in verbose mode
+pytest -v
+```
 
-Poster aesthetic requirements:
-- Solid fills only (`fill="#rrggbb"`, no `url()`, no `rgba()`)
-- No stroke on region paths
-- Transparent background (no `<rect>` fill)
-- `fill-rule="evenodd"` for holes
+### Linting and Formatting
+
+```bash
+# Format code with ruff (if configured)
+ruff format .
+
+# Check linting
+ruff check .
+
+# Fix auto-fixable issues
+ruff check . --fix
+
+# Type checking with mypy (optional)
+mypy apexvec/
+```
+
+### Running the Pipeline
+
+```bash
+# Basic vectorization
+python -m apexvec test_images/img0.jpg -o output.svg
+
+# Poster-style with debug stages
+python corrected.py test_images/img0.jpg -o output.png --colors 20
+python optimized_v2.py test_images/img0.jpg -o output.png --colors 20
+
+# With stage visualization
+python -m apexvec input.png -o output.svg --poster --save-stages debug/
+```
+
+## Code Style Guidelines
+
+### Python Style
+
+- **Formatter**: Use ruff or black (line length: 88-100)
+- **Docstrings**: Google-style docstrings with Args/Returns/Raises
+- **Type Hints**: Use `typing` module for all function signatures
+- **Imports**: Group as: stdlib → third-party → local (alphabetical within groups)
+
+### Import Order Example
+
+```python
+"""Module docstring."""
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import numpy as np
+from PIL import Image
+from skimage.measure import find_contours
+
+from apexvec.types import Region, VectorizationError
+```
+
+### Naming Conventions
+
+- **Classes**: `PascalCase` (e.g., `UnifiedPipeline`, `RegionClassifier`)
+- **Functions/Variables**: `snake_case` (e.g., `extract_regions`, `label_map`)
+- **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_COLORS`, `DEFAULT_SIGMA`)
+- **Private**: Prefix with `_` (e.g., `_smooth_boundary`, `_temp_buffer`)
+- **Type Variables**: Use descriptive names (e.g., `config` not `c`, `image` not `img`)
+
+### Documentation Standards
+
+```python
+def process_image(
+    image_path: Union[str, Path],
+    config: Optional[AdaptiveConfig] = None
+) -> str:
+    """Process an image through the vectorization pipeline.
+    
+    Converts raster image to optimized SVG by extracting regions,
+    smoothing boundaries, and generating gap-free vector paths.
+    
+    Args:
+        image_path: Path to input image (JPG/PNG)
+        config: Pipeline configuration. Uses defaults if None.
+        
+    Returns:
+        SVG string containing vectorized image
+        
+    Raises:
+        FileNotFoundError: If input file doesn't exist
+        VectorizationError: If processing fails
+        
+    Example:
+        >>> svg = process_image("input.jpg", AdaptiveConfig(n_colors=12))
+        >>> Path("output.svg").write_text(svg)
+    """
+    pass
+```
+
+### Error Handling
+
+- Use custom exceptions from `apexvec.types.VectorizationError`
+- Fail fast with clear error messages
+- Avoid catching generic `Exception`; catch specific exceptions
+- Log errors before raising when appropriate
+
+```python
+from apexvec.types import VectorizationError
+
+def quantize_colors(image: np.ndarray, n_colors: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Quantize image colors."""
+    if n_colors < 2:
+        raise ValueError(f"n_colors must be >= 2, got {n_colors}")
+    
+    if image.size == 0:
+        raise VectorizationError("Cannot quantize empty image")
+    
+    try:
+        # Processing logic
+        pass
+    except Exception as e:
+        raise VectorizationError(f"Color quantization failed: {e}") from e
+```
+
+### Numerical Operations
+
+- Use `numpy` for array operations (vectorized preferred over loops)
+- Use `scipy.ndimage` for image processing
+- Prefer `skimage` for higher-level image operations
+- Set `random_state` for reproducibility in stochastic algorithms
+
+## Git Commit Guidelines
+
+### When to Commit
+
+- **ALWAYS**: After each meaningful change or test
+- **FREQUENTLY**: Small, focused commits preferred over large batches
+- **NEVER**: Commit broken code or failing tests to main branch
+
+### Commit Message Format
+
+Use conventional commits with format:
+```
+<type>: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Commit Types
+
+| Type | Use When | Example |
+|------|----------|---------|
+| `feat` | New feature | `feat: add shared boundary extraction` |
+| `fix` | Bug fix | `fix: correct gap in region boundaries` |
+| `refactor` | Code restructuring | `refactor: extract contour generation to module` |
+| `test` | Adding/updating tests | `test: add quantization unit tests` |
+| `docs` | Documentation only | `docs: update README with examples` |
+| `style` | Formatting (no code change) | `style: format with ruff` |
+| `chore` | Maintenance tasks | `chore: update dependencies` |
+| `spike` | Experimental/prototype work | `spike: try watershed gap filling` |
+
+### Commit Templates
+
+**Feature Implementation:**
+```
+feat: implement shared boundary extraction
+
+- Extract boundaries at region interfaces
+- Apply Gaussian smoothing per shared edge
+- Generate SVG with overlapping paths
+
+Relates to #42
+```
+
+**Bug Fix:**
+```
+fix: resolve gap artifacts at region boundaries
+
+Gap was caused by insufficient mask dilation.
+Increased dilation iterations from 2 to 3.
+
+Fixes #15
+```
+
+**Experimental:**
+```
+spike: test watershed segmentation for gap filling
+
+- Replace Voronoi with watershed on gradient
+- 89% gap reduction achieved
+- Visual quality preserved
+```
+
+### Branch Naming
+
+- Features: `feat/shared-boundary-extraction`
+- Bug fixes: `fix/gap-artifacts`
+- Spikes/Experiments: `spike/watershed-gapfill`
+- Hotfixes: `hotfix/critical-svg-export`
+
+## Important Constraints
+
+### NEVER Touch
+
+- **Default pipeline behavior** in `apexvec/pipeline.py` unless explicitly asked
+- **Core quantization logic** without thorough testing
+- **SVG export format** (maintains compatibility)
+
+### Testing Requirements
+
+- Test with `test_images/img0.jpg` after any change
+- Verify both visual quality AND gap percentage
+- Ensure Panel 5 matches saved SVG exactly
+- Check color fidelity matches quantized image
+
+## File Organization
+
+```
+apexvector/
+├── apexvec/              # Main package (DO NOT MODIFY without explicit ask)
+├── test_images/          # Test images (read-only)
+├── corrected.py          # Standalone poster pipeline
+├── optimized_v2.py       # Improved standalone pipeline
+├── requirements.txt      # Dependencies
+├── trash/               # Obsolete files (don't modify)
+└── AGENTS.md            # This file
+```
+
+## Dependencies
+
+Core: numpy, opencv-python, scikit-image, scipy, Pillow, shapely, scikit-learn
+Testing: pytest, pytest-cov
+Optional: cupy-cuda12x, cairosvg, triangle
