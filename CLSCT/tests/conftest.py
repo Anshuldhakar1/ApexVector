@@ -32,3 +32,13 @@ def output_dir():
     out_dir = PROJECT_ROOT / "tests" / "output"
     out_dir.mkdir(exist_ok=True)
     return out_dir
+
+
+@pytest.fixture
+def svg_rasterizer():
+    """Fixture providing SVG to PNG rasterizer utility."""
+    from tests.utils.svg_to_png import svg_to_png, convert_folder_svgs
+    return {
+        "svg_to_png": svg_to_png,
+        "convert_folder_svgs": convert_folder_svgs
+    }

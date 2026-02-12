@@ -14,6 +14,7 @@ This will be a python module "apx-clsct".
  - No linter or typechecker is present.
  - Create a tests/ folder
  - Test pipelines using actual images in "../test_images/", test using any 2. Create different folders for each different image you test.
+ - create a svg to png rasterizer (maybe matplotlib) so you can see each output.Ignore if created already only use this while improving the code, this should not be in the user-facing pipeline.
 
 ## Building
 

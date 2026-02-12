@@ -87,3 +87,22 @@ python -m pytest tests/
 ```
 
 Test images are available in `../test_images/`.
+
+### SVG to PNG Rasterizer (Development Utility)
+
+For visualizing outputs during development, a test utility converts SVG outputs to PNG:
+
+```python
+from tests.utils.svg_to_png import svg_to_png, convert_folder_svgs
+
+# Convert single SVG
+png_path = svg_to_png("output.svg", "output.png")
+
+# Convert all SVGs in folder
+png_files = convert_folder_svgs("output_folder", "*.svg")
+```
+
+**Note:** This utility is NOT part of the user-facing pipeline. Install dependencies:
+```bash
+pip install matplotlib cairosvg
+```
