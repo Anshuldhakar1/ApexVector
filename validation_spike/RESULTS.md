@@ -154,3 +154,71 @@ for region in regions:
 
 Note: Stage 3 shows RAW regions (pixel boundaries). Stage 5 shows SMOOTHED boundaries.
 The final SVG uses the smoothed boundaries from Stage 5.
+
+## Critical Fix: Broken SVG Output (Stripe Artifacts)
+
+### Problem
+The final SVG output had severe artifacts:
+- Horizontal stripes across the body
+- Missing pieces (transparent areas)
+- Garbled paths with straight lines cutting across
+- Total corruption of the image
+
+### Root Cause
+The edge sorting logic in `_sort_region_edges` was fundamentally broken. When edges couldn't be chained together, it would just add them anyway, creating paths that jumped from one random location to another.
+
+```python
+# BROKEN - when edges can't connect, just add them anyway
+if not found:
+    for i, (e_idx, rev, start, end) in enumerate(edges_with_points):
+        if i not in used:
+            sorted_edges.append((e_idx, rev, start, end))  # DISCONNECTED!
+            used.add(i)
+            break
+```
+
+This caused:
+1. Open paths that didn't close properly
+2. Line segments jumping across the image
+3. Stripe patterns from horizontal jumps
+4. Missing regions
+
+### Solution
+Complete rewrite of boundary extraction and SVG building:
+
+1. **Identify outer boundary vs holes** using polygon area:
+```python
+# Largest area = outer boundary
+outer_idx = np.argmax(contour_areas)
+```
+
+2. **Store holes separately** in region:
+```python
+region.edge_ids = []        # Outer boundary
+region.hole_edge_ids = []   # Hole boundaries
+```
+
+3. **Build SVG paths properly** with evenodd fill rule:
+```python
+# Outer boundary (clockwise)
+path_parts.append(self._points_to_path(outer_points))
+
+# Holes (counter-clockwise for evenodd fill)
+for hole in holes:
+    path_parts.append(self._points_to_path(hole_points[::-1]))
+
+# Single path with all subpaths
+full_path = " ".join(path_parts)
+```
+
+### Key Changes
+- Removed broken `_sort_region_edges` function entirely
+- Each region now tracks outer boundary + holes separately
+- SVG path uses `evenodd` fill rule properly
+- No more edge chaining - each contour is a complete subpath
+
+### Result
+- Clean closed paths
+- Proper hole handling (e.g., inside of mouth, between arms)
+- No stripe artifacts
+- Gap-free output
