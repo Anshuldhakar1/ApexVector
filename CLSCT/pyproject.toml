@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apx-clsct"
+version = "0.1.0"
+description = "Color Layer Separation + Contour Tracing Vectorization"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "ApexVector Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "opencv-python>=4.5.0",
+    "scikit-image>=0.18.0",
+    "scipy>=1.7.0",
+    "Pillow>=8.0.0",
+    "shapely>=1.7.0",
+    "scikit-learn>=0.24.0",
+]
+
+[project.scripts]
+apx-clsct = "apx_clsct.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/apexvector/apexvector"
+Repository = "https://github.com/apexvector/apexvector"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apx_clsct*"]
