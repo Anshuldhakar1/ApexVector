@@ -83,6 +83,10 @@ class Pipeline:
         
         # Step 1: Color Quantization
         quantized, palette = self._quantize(image)
+        
+        # Calculate dominant color (most frequent) for background
+        dominant_color = self._get_dominant_color(quantized)
+        
         if debug:
             self.debug_stages.append(("2_quantized", quantized.copy()))
         
@@ -93,7 +97,12 @@ class Pipeline:
         processed_layers = self._process_contours(layers, debug)
         
         # Step 6: SVG Generation
-        svg = self._generate_svg(processed_layers, image.shape[1], image.shape[0])
+        svg = self._generate_svg(
+            processed_layers, 
+            image.shape[1], 
+            image.shape[0],
+            dominant_color
+        )
         
         # Save if output path provided
         if output_path:
@@ -119,6 +128,28 @@ class Pipeline:
     def _quantize(self, image: ImageArray) -> Tuple[ImageArray, np.ndarray]:
         """Quantize image colors."""
         return quantize_colors(image, self.config.n_colors)
+    
+    def _get_dominant_color(self, quantized: ImageArray) -> Color:
+        """Get the most frequent color in the quantized image.
+        
+        This is typically the background color.
+        
+        Args:
+            quantized: Quantized image
+            
+        Returns:
+            Most frequent color as RGB tuple
+        """
+        # Reshape to list of pixels
+        pixels = quantized.reshape(-1, quantized.shape[2])
+        
+        # Count unique colors
+        unique, counts = np.unique(pixels, axis=0, return_counts=True)
+        
+        # Get most frequent
+        dominant = unique[np.argmax(counts)]
+        
+        return tuple(int(c) for c in dominant)
     
     def _extract_layers(
         self,
@@ -203,10 +234,17 @@ class Pipeline:
         self,
         layers: List[Tuple[Color, List[Contour]]],
         width: int,
-        height: int
+        height: int,
+        background_color: Color
     ) -> str:
         """Generate SVG from processed layers."""
-        return contours_to_svg(layers, width, height, self.config.use_bezier)
+        return contours_to_svg(
+            layers, 
+            width, 
+            height, 
+            self.config.use_bezier,
+            background_color
+        )
 
 
 def process_image(
