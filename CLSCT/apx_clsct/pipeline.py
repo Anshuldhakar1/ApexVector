@@ -37,7 +37,7 @@ class PipelineConfig:
     epsilon_factor: float = 0.005  # Reduced for better shape preservation
 
     # Smoothing
-    smooth_method: str = "gaussian"  # "gaussian", "bspline", "none"
+    smooth_method: str = "none"  # "gaussian", "bspline", "none"
     smooth_sigma: float = 1.0
     smoothness: float = 3.0
 

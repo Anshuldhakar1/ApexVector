@@ -33,14 +33,14 @@ python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --debug
 ### Smoothing Options
 
 ```bash
-# Gaussian smoothing (default)
+# No smoothing (default) - best for sharp edges
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg
+
+# Gaussian smoothing
 python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth gaussian --sigma 1.5
 
 # B-spline smoothing
 python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth bspline
-
-# No smoothing (use line segments)
-python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth none
 ```
 
 ### Advanced Options

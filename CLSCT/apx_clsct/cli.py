@@ -48,15 +48,15 @@ Examples:
     parser.add_argument(
         "--colors",
         type=int,
-        default=8,
-        help="Number of colors for quantization (default: 8)",
+        default=24,
+        help="Number of colors for quantization (default: 24)",
     )
 
     parser.add_argument(
         "--smooth",
         choices=["none", "gaussian", "bspline"],
-        default="gaussian",
-        help="Smoothing method (default: gaussian)",
+        default="none",
+        help="Smoothing method (default: none)",
     )
 
     parser.add_argument(
