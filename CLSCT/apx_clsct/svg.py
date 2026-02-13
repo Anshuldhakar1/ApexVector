@@ -1,6 +1,6 @@
 """SVG path generation module."""
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 
 import numpy as np
 
@@ -8,20 +8,18 @@ from .types import Contour, Color, SVGError
 
 
 def contours_to_svg(
-    layers: List[Tuple[Color, List[Contour]]],
+    layers: List[Tuple[Color, List[Union[Contour, Tuple[Contour, List[Contour]]]]]],
     width: int,
     height: int,
     smooth: bool = True,
     background_color: Optional[Color] = None,
 ) -> str:
-    """Convert smoothed contours to SVG.
-
-    Converts the smoothed curve points into SVG path commands
-    (M, L, C, Q, Z). Each color layer becomes an SVG <path>
-    element with a solid fill.
+    """Convert smoothed contours to SVG with hole support.
 
     Args:
-        layers: List of (color, contours) tuples
+        layers: List of (color, contours) tuples. Each contour can be:
+            - Simple contour (numpy array)
+            - Tuple of (outer_contour, [hole_contours])
         width: Image width
         height: Image height
         smooth: If True, use cubic bezier curves; else use lines
@@ -42,28 +40,73 @@ def contours_to_svg(
         # Add background rectangle with transparent fill
         svg_parts.append(f'  <rect width="{width}" height="{height}" fill="none" />')
 
-        for color, contours in layers:
+        for color, contours_data in layers:
             # Convert color to hex
             color_hex = color_to_hex(color)
 
-            for contour in contours:
-                if len(contour) < 3:
+            for contour_item in contours_data:
+                # Handle both simple contours and (outer, holes) tuples
+                if isinstance(contour_item, tuple):
+                    outer_contour, holes = contour_item
+                else:
+                    outer_contour, holes = contour_item, []
+
+                if len(outer_contour) < 3:
                     continue
 
-                if smooth:
-                    path_data = contour_to_bezier_path(contour)
-                else:
-                    path_data = contour_to_line_path(contour)
+                # Build compound path with outer contour and holes
+                path_data = build_compound_path(outer_contour, holes, smooth)
 
-                svg_parts.append(
-                    f'  <path d="{path_data}" fill="{color_hex}" stroke="none" />'
-                )
+                if path_data:
+                    svg_parts.append(
+                        f'  <path d="{path_data}" fill="{color_hex}" stroke="none" fill-rule="evenodd" />'
+                    )
 
         svg_parts.append("</svg>")
         return "\n".join(svg_parts)
 
     except Exception as e:
         raise SVGError(f"SVG generation failed: {e}") from e
+
+
+def build_compound_path(
+    outer: Contour, holes: List[Contour], smooth: bool = True
+) -> str:
+    """Build SVG path data for a compound shape with holes.
+
+    Uses even-odd fill rule: outer contour is filled, holes are cut out.
+    Holes are drawn in reverse direction to create proper winding.
+
+    Args:
+        outer: Outer contour points
+        holes: List of hole contours
+        smooth: If True, use bezier curves; else use lines
+
+    Returns:
+        SVG path data string
+    """
+    parts = []
+
+    # Add outer contour
+    if smooth:
+        parts.append(contour_to_bezier_path(outer))
+    else:
+        parts.append(contour_to_line_path(outer))
+
+    # Add holes (reverse direction for proper winding)
+    for hole in holes:
+        if len(hole) < 3:
+            continue
+
+        # Reverse hole to create opposite winding
+        reversed_hole = hole[::-1]
+
+        if smooth:
+            parts.append(contour_to_bezier_path(reversed_hole))
+        else:
+            parts.append(contour_to_line_path(reversed_hole))
+
+    return " ".join(parts)
 
 
 def color_to_hex(color: Color) -> str:

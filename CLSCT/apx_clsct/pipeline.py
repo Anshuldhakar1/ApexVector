@@ -12,7 +12,11 @@ from .quantize import quantize_colors
 from .extract import extract_color_layers, clean_mask
 from .contour import find_contours, dilate_mask
 from .simplify import simplify_contours
-from .smooth import smooth_contour_bspline, gaussian_smooth_contour
+from .smooth import (
+    smooth_contour_bspline,
+    gaussian_smooth_contour,
+    smart_smooth_contour,
+)
 from .svg import contours_to_svg, save_svg
 
 
@@ -25,7 +29,7 @@ class PipelineConfig:
 
     # Layer extraction
     min_area: int = 50  # Increased from 10 to filter more noise
-    dilate_iterations: int = 0  # Reduced from 1 to prevent fragmentation
+    dilate_iterations: int = 1  # Slight dilation to prevent gaps
 
     # Contour detection
     contour_method: str = "simple"
@@ -37,7 +41,7 @@ class PipelineConfig:
     epsilon_factor: float = 0.005  # Reduced for better shape preservation
 
     # Smoothing
-    smooth_method: str = "none"  # "gaussian", "bspline", "none"
+    smooth_method: str = "none"  # "gaussian", "bspline", "none", "smart"
     smooth_sigma: float = 1.0
     smoothness: float = 3.0
 
@@ -55,95 +59,89 @@ class Pipeline:
             config: Pipeline configuration. Uses defaults if None.
         """
         self.config = config or PipelineConfig()
-        self.debug_stages: List[Tuple[str, ImageArray]] = []
+        self.debug_stages: List[Tuple[str, np.ndarray]] = []
 
     def process(
-        self, image_path: str, output_path: Optional[str] = None, debug: bool = False
+        self,
+        image_path: str,
+        output_path: Optional[str] = None,
+        debug: bool = False,
     ) -> str:
         """Process an image through the vectorization pipeline.
 
         Args:
             image_path: Path to input image
-            output_path: Path to output SVG (optional)
-            debug: If True, collect intermediate stage images
+            output_path: Optional path to save SVG output
+            debug: If True, save intermediate stage images
 
         Returns:
-            SVG string containing vectorized image
+            SVG string
 
         Raises:
             FileNotFoundError: If input file doesn't exist
             VectorizationError: If processing fails
         """
-        # Load image
-        image = self._load_image(image_path)
+        try:
+            # Load image
+            image = self._load_image(image_path)
+            height, width = image.shape[:2]
 
-        if debug:
+            # Clear debug stages
             self.debug_stages = []
-            self.debug_stages.append(("1_original", image.copy()))
 
-        # Step 1: Color Quantization
-        quantized, palette = self._quantize(image)
+            if debug:
+                self.debug_stages.append(("1_original", image))
 
-        # Calculate dominant color (most frequent) for background
-        dominant_color = self._get_dominant_color(quantized)
+            # Step 1: Color Quantization
+            quantized, palette = self._quantize_colors(image)
 
-        if debug:
-            self.debug_stages.append(("2_quantized", quantized.copy()))
+            if debug:
+                self.debug_stages.append(("2_quantized", quantized))
 
-        # Step 2: Layer Extraction
-        layers = self._extract_layers(quantized, palette)
+            # Step 2: Extract Color Layers
+            layers = self._extract_layers(quantized, palette)
 
-        # Step 3-5: Contour Detection, Simplification, Smoothing
-        processed_layers = self._process_contours(layers, debug)
+            # Step 3: Process Contours with hole handling
+            contour_layers = self._process_contours_with_holes(layers, debug)
 
-        # Step 6: SVG Generation
-        svg = self._generate_svg(
-            processed_layers, image.shape[1], image.shape[0], dominant_color
-        )
+            # Step 4: Generate SVG
+            background_color = self._detect_background_color(quantized)
+            svg = contours_to_svg(
+                contour_layers,
+                width,
+                height,
+                smooth=self.config.use_bezier,
+                background_color=background_color,
+            )
 
-        # Save if output path provided
-        if output_path:
-            save_svg(svg, output_path)
+            # Save if output path provided
+            if output_path:
+                save_svg(svg, output_path)
 
-        return svg
+            return svg
 
-    def _load_image(self, path: str) -> ImageArray:
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            raise VectorizationError(f"Pipeline processing failed: {e}") from e
+
+    def _load_image(self, image_path: str) -> ImageArray:
         """Load image from path."""
-        if not Path(path).exists():
-            raise FileNotFoundError(f"Image not found: {path}")
-
-        img = Image.open(path)
-
-        # Convert to RGB if needed
-        if img.mode in ("RGBA", "LA", "P"):
+        img = Image.open(image_path)
+        if img.mode != "RGB":
             img = img.convert("RGB")
-        elif img.mode != "RGB":
-            img = img.convert("RGB")
-
         return np.array(img)
 
-    def _quantize(self, image: ImageArray) -> Tuple[ImageArray, np.ndarray]:
+    def _quantize_colors(self, image: ImageArray) -> Tuple[ImageArray, np.ndarray]:
         """Quantize image colors."""
         return quantize_colors(image, self.config.n_colors)
 
-    def _get_dominant_color(self, quantized: ImageArray) -> Color:
-        """Get the background color from the quantized image.
-
-        Samples from corner regions where background is most likely
-        to be visible, even when the subject fills most of the frame.
-
-        Args:
-            quantized: Quantized image
-
-        Returns:
-            Background color as RGB tuple
-        """
+    def _detect_background_color(self, quantized: ImageArray) -> Color:
+        """Detect background color from image corners."""
         h, w = quantized.shape[:2]
+        corner_size = min(h, w) // 10
 
-        # Sample corner regions (where background is most likely visible)
-        corner_size = max(5, min(h, w) // 20)  # 5% of image size or at least 5 pixels
         corner_pixels = []
-
         # Top-left corner
         corner_pixels.extend(quantized[:corner_size, :corner_size].reshape(-1, 3))
         # Top-right corner
@@ -183,65 +181,66 @@ class Pipeline:
 
         return cleaned_layers
 
-    def _process_contours(
+    def _process_contours_with_holes(
         self, layers: List[Tuple[Color, np.ndarray]], debug: bool
     ) -> List[Tuple[Color, List[Contour]]]:
-        """Process contours for all layers."""
+        """Process contours with proper hole handling using compound paths."""
         import cv2
 
         processed = []
         all_contours_img = None
 
         if debug:
-            # Create blank image for contour visualization
             h, w = layers[0][1].shape[:2] if layers else (100, 100)
             all_contours_img = np.zeros((h, w, 3), dtype=np.uint8)
 
         for color, mask in layers:
-            # Find contours with hierarchy to handle holes
-            contours, hierarchy = self._find_contours_hierarchical(mask)
+            # Find contours with hierarchy
+            contours, hierarchy = self._find_contours_with_hierarchy(mask)
 
             if len(contours) == 0:
                 continue
 
-            # Filter contours by area
-            min_area = self.config.min_contour_area
-            filtered_contours = []
-            for contour in contours:
-                area = cv2.contourArea(contour.astype(np.float32))
-                if area >= min_area:
-                    filtered_contours.append(contour)
+            # Build parent-child relationships
+            contour_groups = self._group_contours_by_hierarchy(contours, hierarchy)
 
-            if len(filtered_contours) == 0:
-                continue
+            # Process each group (outer contour + its holes)
+            final_contours = []
+            for outer_idx, hole_indices in contour_groups.items():
+                outer_contour = contours[outer_idx]
+                hole_contours = [contours[i] for i in hole_indices if i < len(contours)]
 
-            # Simplify
-            filtered_contours = simplify_contours(
-                filtered_contours, self.config.epsilon_factor
-            )
+                # Filter outer contour by area
+                outer_area = cv2.contourArea(outer_contour.astype(np.float32))
+                if outer_area < self.config.min_contour_area:
+                    continue
 
-            # Smooth
-            if self.config.smooth_method == "gaussian":
-                filtered_contours = [
-                    gaussian_smooth_contour(c, self.config.smooth_sigma)
-                    for c in filtered_contours
-                ]
-            elif self.config.smooth_method == "bspline":
-                filtered_contours = [
-                    smooth_contour_bspline(c, self.config.smoothness)
-                    for c in filtered_contours
-                ]
+                # Simplify outer contour
+                outer_contour = self._simplify_and_smooth(outer_contour)
 
-            # Filter out empty contours
-            filtered_contours = [c for c in filtered_contours if len(c) >= 3]
+                if len(outer_contour) < 3:
+                    continue
 
-            if filtered_contours:
-                processed.append((color, filtered_contours))
+                # Process holes
+                processed_holes = []
+                for hole in hole_contours:
+                    hole_area = cv2.contourArea(hole.astype(np.float32))
+                    if (
+                        hole_area >= self.config.min_contour_area * 0.5
+                    ):  # Smaller threshold for holes
+                        processed_hole = self._simplify_and_smooth(hole)
+                        if len(processed_hole) >= 3:
+                            processed_holes.append(processed_hole)
+
+                # Store as tuple: (outer, [holes])
+                final_contours.append((outer_contour, processed_holes))
+
+            if final_contours:
+                processed.append((color, final_contours))
 
                 if debug and all_contours_img is not None:
-                    # Draw contours on debug image
-                    for contour in filtered_contours:
-                        pts = contour.reshape(-1, 1, 2).astype(np.int32)
+                    for outer, holes in final_contours:
+                        pts = outer.reshape(-1, 1, 2).astype(np.int32)
                         cv2.polylines(
                             all_contours_img,
                             [pts],
@@ -249,17 +248,19 @@ class Pipeline:
                             tuple(int(c) for c in color[:3]),
                             2,
                         )
+                        for hole in holes:
+                            pts = hole.reshape(-1, 1, 2).astype(np.int32)
+                            cv2.polylines(
+                                all_contours_img, [pts], True, (255, 255, 255), 1
+                            )
 
         if debug and all_contours_img is not None:
             self.debug_stages.append(("3_contours", all_contours_img))
 
         return processed
 
-    def _find_contours_hierarchical(self, mask: np.ndarray):
+    def _find_contours_with_hierarchy(self, mask: np.ndarray):
         """Find contours with hierarchy information.
-
-        Args:
-            mask: Binary mask
 
         Returns:
             Tuple of (contours, hierarchy)
@@ -270,9 +271,7 @@ class Pipeline:
             mask = (mask.astype(np.uint8)) * 255
 
         contours, hierarchy = cv2.findContours(
-            mask,
-            cv2.RETR_TREE,  # Retrieve all contours with hierarchy for holes
-            cv2.CHAIN_APPROX_SIMPLE,
+            mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
         )
 
         # Reshape contours
@@ -283,38 +282,73 @@ class Pipeline:
 
         return result, hierarchy
 
-    def _generate_svg(
-        self,
-        layers: List[Tuple[Color, List[Contour]]],
-        width: int,
-        height: int,
-        background_color: Color,
-    ) -> str:
-        """Generate SVG from processed layers."""
-        return contours_to_svg(
-            layers, width, height, self.config.use_bezier, background_color
-        )
+    def _group_contours_by_hierarchy(self, contours, hierarchy):
+        """Group contours by parent-child relationships.
+
+        Returns:
+            Dict mapping outer contour index to list of hole indices
+        """
+        if hierarchy is None or len(contours) == 0:
+            return {i: [] for i in range(len(contours))}
+
+        hierarchy = hierarchy[0]  # OpenCV returns list of arrays
+        groups = {}
+
+        for i, h in enumerate(hierarchy):
+            parent = h[3]  # Parent index
+
+            if parent == -1:
+                # This is an outer contour
+                if i not in groups:
+                    groups[i] = []
+            else:
+                # This is a hole - find its outermost parent
+                outer = parent
+                while hierarchy[outer][3] != -1:
+                    outer = hierarchy[outer][3]
+
+                if outer not in groups:
+                    groups[outer] = []
+                groups[outer].append(i)
+
+        return groups
+
+    def _simplify_and_smooth(self, contour: Contour) -> Contour:
+        """Apply simplification and optional smart smoothing."""
+        # Simplify
+        simplified = simplify_contours([contour], self.config.epsilon_factor)[0]
+
+        # Apply smoothing if configured
+        if self.config.smooth_method == "gaussian":
+            simplified = gaussian_smooth_contour(simplified, self.config.smooth_sigma)
+        elif self.config.smooth_method == "bspline":
+            simplified = smooth_contour_bspline(simplified, self.config.smoothness)
+        elif self.config.smooth_method == "smart":
+            simplified = smart_smooth_contour(simplified)
+
+        return simplified
 
 
 def process_image(
     image_path: str,
     output_path: Optional[str] = None,
-    n_colors: int = 8,
-    debug: bool = False,
-    **kwargs,
+    config: Optional[PipelineConfig] = None,
 ) -> str:
-    """Convenience function to process an image.
+    """Process an image through the vectorization pipeline.
+
+    Convenience function for one-off processing.
 
     Args:
-        image_path: Path to input image
-        output_path: Path to output SVG (optional)
-        n_colors: Number of colors for quantization
-        debug: If True, collect debug information
-        **kwargs: Additional configuration options
+        image_path: Path to input image (JPG/PNG)
+        output_path: Optional path to save SVG output
+        config: Optional configuration object
 
     Returns:
-        SVG string
+        SVG string containing vectorized image
+
+    Example:
+        >>> svg = process_image("input.jpg", "output.svg")
+        >>> svg = process_image("input.jpg", config=PipelineConfig(n_colors=12))
     """
-    config = PipelineConfig(n_colors=n_colors, **kwargs)
     pipeline = Pipeline(config)
-    return pipeline.process(image_path, output_path, debug)
+    return pipeline.process(image_path, output_path)
