@@ -104,10 +104,15 @@ class Pipeline:
             # Step 3: Process Contours with hole handling
             contour_layers = self._process_contours_with_holes(layers, debug)
 
-            # Step 4: Generate SVG
+            # Step 4: Detect and remove background color
             background_color = self._detect_background_color(quantized)
+            foreground_layers = self._filter_background(
+                contour_layers, background_color
+            )
+
+            # Step 5: Generate SVG
             svg = contours_to_svg(
-                contour_layers,
+                foreground_layers,
                 width,
                 height,
                 smooth=self.config.use_bezier,
@@ -163,6 +168,32 @@ class Pipeline:
         if len(dominant) >= 3:
             return (int(dominant[0]), int(dominant[1]), int(dominant[2]))
         return (255, 255, 255)  # Default white
+
+    def _filter_background(
+        self, contour_layers: List[Tuple[Color, List[Contour]]], background_color: Color
+    ) -> List[Tuple[Color, List[Contour]]]:
+        """Filter out the background color from contour layers.
+
+        Args:
+            contour_layers: List of (color, contours) tuples
+            background_color: RGB color to filter out
+
+        Returns:
+            Filtered list without background color
+        """
+        filtered = []
+        for color, contours in contour_layers:
+            # Check if this color matches background (with tolerance)
+            if len(color) >= 3 and len(background_color) >= 3:
+                color_match = (
+                    abs(int(color[0]) - int(background_color[0])) < 5
+                    and abs(int(color[1]) - int(background_color[1])) < 5
+                    and abs(int(color[2]) - int(background_color[2])) < 5
+                )
+                if color_match:
+                    continue  # Skip background color
+            filtered.append((color, contours))
+        return filtered
 
     def _extract_layers(
         self, quantized: ImageArray, palette: np.ndarray
