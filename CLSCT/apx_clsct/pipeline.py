@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple, Callable
 import numpy as np
 from PIL import Image
 
-from .types import ImageArray, Contour, Color, VectorizationError
+from .types import ImageArray, Contour, Color, VectorizationError, PosterPipelineConfig
 from .quantize import quantize_colors
 from .extract import extract_color_layers, clean_mask
 from .contour import find_contours, dilate_mask
@@ -329,6 +329,24 @@ class Pipeline:
         return simplified
 
 
+class PosterPipeline(Pipeline):
+    """Poster-style vectorization pipeline.
+
+    Optimized for sharp, geometric vector art with crisp edges and
+    high color separation. No smoothing is applied to maintain
+    the poster aesthetic.
+    """
+
+    def __init__(self, config: Optional[PosterPipelineConfig] = None):
+        """Initialize poster pipeline with configuration.
+
+        Args:
+            config: Poster pipeline configuration. Uses defaults if None.
+        """
+        self.config = config or PosterPipelineConfig()
+        self.debug_stages: List[Tuple[str, np.ndarray]] = []
+
+
 def process_image(
     image_path: str,
     output_path: Optional[str] = None,
@@ -351,4 +369,29 @@ def process_image(
         >>> svg = process_image("input.jpg", config=PipelineConfig(n_colors=12))
     """
     pipeline = Pipeline(config)
+    return pipeline.process(image_path, output_path)
+
+
+def process_image_poster(
+    image_path: str,
+    output_path: Optional[str] = None,
+    config: Optional[PosterPipelineConfig] = None,
+) -> str:
+    """Process an image through the poster vectorization pipeline.
+
+    Convenience function for one-off poster-style processing.
+
+    Args:
+        image_path: Path to input image (JPG/PNG)
+        output_path: Optional path to save SVG output
+        config: Optional poster configuration object
+
+    Returns:
+        SVG string containing vectorized image with poster aesthetic
+
+    Example:
+        >>> svg = process_image_poster("input.jpg", "output.svg")
+        >>> svg = process_image_poster("input.jpg", config=PosterPipelineConfig(n_colors=48))
+    """
+    pipeline = PosterPipeline(config)
     return pipeline.process(image_path, output_path)

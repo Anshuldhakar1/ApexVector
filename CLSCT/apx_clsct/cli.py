@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from .pipeline import Pipeline, PipelineConfig
+from .pipeline import Pipeline, PipelineConfig, PosterPipeline, PosterPipelineConfig
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -18,17 +18,16 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic vectorization with 8 colors
+  # CLSCT Mode (Default - General Purpose)
   apx-clsct -i input.jpg -o output.svg
+  apx-clsct -i input.jpg -o output.svg --colors 32 --smooth gaussian
 
-  # Vectorization with 12 colors
-  apx-clsct -i input.jpg -o output.svg --colors 12
+  # POSTER Mode (Sharp, Geometric Vector Art)
+  apx-clsct -i input.jpg -o output.svg --mode poster
+  apx-clsct -i input.jpg -o output.svg --mode poster --colors 48 --epsilon 0.001
 
-  # With debug output
-  apx-clsct -i input.jpg -o output.svg --debug
-
-  # Custom smoothing
-  apx-clsct -i input.jpg -o output.svg --smooth gaussian --sigma 1.5
+  # Debug output
+  apx-clsct -i input.jpg -o output.svg --mode poster --debug
         """,
     )
 
@@ -42,21 +41,30 @@ Examples:
     )
 
     parser.add_argument(
+        "-m",
+        "--mode",
+        choices=["clsct", "poster"],
+        default="clsct",
+        help="Pipeline mode: clsct (default, general-purpose) or poster (sharp geometric art)",
+    )
+
+    parser.add_argument(
         "--debug", action="store_true", help="Save intermediate stage visualizations"
     )
 
     parser.add_argument(
         "--colors",
+        "-c",
         type=int,
-        default=24,
-        help="Number of colors for quantization (default: 24)",
+        default=None,  # Will be set based on mode
+        help="Number of colors for quantization (clsct default: 24, poster default: 32)",
     )
 
     parser.add_argument(
         "--smooth",
         choices=["none", "gaussian", "bspline"],
         default="none",
-        help="Smoothing method (default: none)",
+        help="Smoothing method - NOT AVAILABLE in poster mode (default: none)",
     )
 
     parser.add_argument(
@@ -68,23 +76,24 @@ Examples:
 
     parser.add_argument(
         "--epsilon",
+        "-e",
         type=float,
-        default=0.01,
-        help="Douglas-Peucker epsilon factor (default: 0.01)",
+        default=None,  # Will be set based on mode
+        help="Simplification epsilon factor (clsct default: 0.005, poster default: 0.002)",
     )
 
     parser.add_argument(
         "--min-area",
         type=int,
-        default=50,
-        help="Minimum contour area in pixels (default: 50)",
+        default=None,  # Will be set based on mode
+        help="Minimum region area in pixels (clsct default: 50, poster default: 30)",
     )
 
     parser.add_argument(
         "--min-contour-area",
         type=float,
-        default=50.0,
-        help="Minimum contour area after detection (default: 50.0)",
+        default=None,  # Will be set based on mode
+        help="Minimum contour area in pixels (clsct default: 50.0, poster default: 20.0)",
     )
 
     return parser
@@ -140,31 +149,68 @@ def main(args: Optional[list] = None) -> int:
     output_dir = Path(output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create configuration
-    config = PipelineConfig(
-        n_colors=parsed.colors,
-        smooth_method=parsed.smooth,
-        smooth_sigma=parsed.sigma,
-        epsilon_factor=parsed.epsilon,
-        min_area=parsed.min_area,
-        min_contour_area=getattr(parsed, "min_contour_area", 50.0),
-    )
+    # Validate mode-specific constraints
+    if parsed.mode == "poster":
+        if parsed.smooth != "none":
+            print(
+                f"Warning: Smoothing method '{parsed.smooth}' is not available in poster mode. "
+                "Setting to 'none'.",
+                file=sys.stderr,
+            )
 
-    # Process image
+    # Set defaults based on mode
+    if parsed.mode == "clsct":
+        n_colors = parsed.colors if parsed.colors is not None else 24
+        epsilon_factor = parsed.epsilon if parsed.epsilon is not None else 0.005
+        min_area = parsed.min_area if parsed.min_area is not None else 50
+        min_contour_area = (
+            parsed.min_contour_area if parsed.min_contour_area is not None else 50.0
+        )
+        smooth_method = parsed.smooth
+    else:  # poster mode
+        n_colors = parsed.colors if parsed.colors is not None else 32
+        epsilon_factor = parsed.epsilon if parsed.epsilon is not None else 0.002
+        min_area = parsed.min_area if parsed.min_area is not None else 30
+        min_contour_area = (
+            parsed.min_contour_area if parsed.min_contour_area is not None else 20.0
+        )
+        smooth_method = "none"  # Force no smoothing in poster mode
+
+    # Create configuration and pipeline based on mode
     try:
         print(f"Processing: {parsed.input}")
-        print(f"  Colors: {parsed.colors}")
-        print(f"  Smoothing: {parsed.smooth}")
+        print(f"  Mode: {parsed.mode}")
+        print(f"  Colors: {n_colors}")
+        print(f"  Epsilon: {epsilon_factor}")
 
-        pipeline = Pipeline(config)
+        if parsed.mode == "clsct":
+            config = PipelineConfig(
+                n_colors=n_colors,
+                smooth_method=smooth_method,
+                smooth_sigma=parsed.sigma,
+                epsilon_factor=epsilon_factor,
+                min_area=min_area,
+                min_contour_area=min_contour_area,
+            )
+            pipeline = Pipeline(config)
+            print(f"  Smoothing: {smooth_method}")
+        else:  # poster mode
+            config = PosterPipelineConfig(
+                n_colors=n_colors,
+                epsilon_factor=epsilon_factor,
+                min_area=min_area,
+                min_contour_area=min_contour_area,
+            )
+            pipeline = PosterPipeline(config)
+            print(f"  Smoothing: none (forced for poster mode)")
+            print(f"  Dilation: 0 (forced for poster mode)")
+
         svg = pipeline.process(parsed.input, output_path, debug=parsed.debug)
 
         print(f"  Output saved: {output_path}")
 
         # Save debug stages if requested
         if parsed.debug and hasattr(pipeline, "debug_stages"):
-            import numpy as np
-
             save_debug_stages(pipeline, output_path)
 
         return 0
