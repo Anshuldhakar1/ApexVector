@@ -49,8 +49,11 @@ apx-clsct -i ../test_images/img0.jpg -o output.svg --smooth none
 # Adjust simplification (lower = more points)
 apx-clsct -i ../test_images/img0.jpg -o output.svg --epsilon 0.005
 
-# Filter small regions
+# Filter small mask regions (noise removal)
 apx-clsct -i ../test_images/img0.jpg -o output.svg --min-area 50
+
+# Filter small contours after detection
+apx-clsct -i ../test_images/img0.jpg -o output.svg --min-contour-area 100.0
 ```
 
 ## Python API
