@@ -36,6 +36,9 @@ python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --debug
 # No smoothing (default) - best for sharp edges
 python -m apx_clsct -i ../test_images/img0.jpg -o output.svg
 
+# Smart smoothing - preserves corners, smooths long curves
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth smart
+
 # Gaussian smoothing
 python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth gaussian --sigma 1.5
 
