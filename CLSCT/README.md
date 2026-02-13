@@ -16,44 +16,44 @@ pip install -e .
 ### Basic Vectorization
 
 ```bash
-# Vectorize with 8 colors (default)
-apx-clsct -i ../test_images/img0.jpg -o output.svg
+# Vectorize with 24 colors (default)
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg
 
 # Vectorize with custom color count
-apx-clsct -i ../test_images/img0.jpg -o output.svg --colors 12
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --colors 12
 ```
 
 ### With Debug Output
 
 ```bash
 # Save intermediate stage visualizations
-apx-clsct -i ../test_images/img0.jpg -o output.svg --debug
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --debug
 ```
 
 ### Smoothing Options
 
 ```bash
 # Gaussian smoothing (default)
-apx-clsct -i ../test_images/img0.jpg -o output.svg --smooth gaussian --sigma 1.5
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth gaussian --sigma 1.5
 
 # B-spline smoothing
-apx-clsct -i ../test_images/img0.jpg -o output.svg --smooth bspline
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth bspline
 
 # No smoothing (use line segments)
-apx-clsct -i ../test_images/img0.jpg -o output.svg --smooth none
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --smooth none
 ```
 
 ### Advanced Options
 
 ```bash
 # Adjust simplification (lower = more points)
-apx-clsct -i ../test_images/img0.jpg -o output.svg --epsilon 0.005
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --epsilon 0.005
 
 # Filter small mask regions (noise removal)
-apx-clsct -i ../test_images/img0.jpg -o output.svg --min-area 50
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --min-area 50
 
 # Filter small contours after detection
-apx-clsct -i ../test_images/img0.jpg -o output.svg --min-contour-area 100.0
+python -m apx_clsct -i ../test_images/img0.jpg -o output.svg --min-contour-area 100.0
 ```
 
 ## Python API
