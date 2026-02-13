@@ -21,7 +21,7 @@ class PipelineConfig:
     """Configuration for the vectorization pipeline."""
 
     # Color quantization
-    n_colors: int = 8
+    n_colors: int = 24
 
     # Layer extraction
     min_area: int = 50  # Increased from 10 to filter more noise

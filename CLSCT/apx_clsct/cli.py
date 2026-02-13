@@ -136,6 +136,10 @@ def main(args: Optional[list] = None) -> int:
     else:
         output_path = str(input_path.with_suffix(".svg"))
 
+    # Create output directory if it doesn't exist
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # Create configuration
     config = PipelineConfig(
         n_colors=parsed.colors,
